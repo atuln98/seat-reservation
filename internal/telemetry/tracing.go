@@ -58,8 +58,10 @@ type countingProcessor struct {
 
 func (processor countingProcessor) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
 
-func (processor countingProcessor) OnEnd(sdktrace.ReadOnlySpan) {
-	processor.stats.ended.Add(1)
+func (processor countingProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
+	if span.SpanContext().IsSampled() {
+		processor.stats.ended.Add(1)
+	}
 }
 
 func (processor countingProcessor) Shutdown(context.Context) error {
@@ -161,7 +163,11 @@ func (sampler routeSampler) ShouldSample(parameters sdktrace.SamplingParameters)
 			}
 		}
 	}
-	return sampler.inner.ShouldSample(parameters)
+	result := sampler.inner.ShouldSample(parameters)
+	if result.Decision == sdktrace.Drop {
+		result.Decision = sdktrace.RecordOnly
+	}
+	return result
 }
 
 func (sampler routeSampler) Description() string {
@@ -183,9 +189,10 @@ func New(ctx context.Context, cfg Config) (*sdktrace.TracerProvider, *Stats, err
 	options := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(serviceResource),
 		sdktrace.WithSpanProcessor(countingProcessor{stats: stats}),
+		sdktrace.WithSpanProcessor(DefaultCollector),
 	}
 	if !configured {
-		options = append(options, sdktrace.WithSampler(sdktrace.NeverSample()))
+		options = append(options, sdktrace.WithSampler(routeSampler{inner: sdktrace.NeverSample()}))
 		return sdktrace.NewTracerProvider(options...), stats, nil
 	}
 
@@ -223,7 +230,7 @@ func New(ctx context.Context, cfg Config) (*sdktrace.TracerProvider, *Stats, err
 
 	options = append(
 		options,
-		sdktrace.WithSampler(sdktrace.ParentBased(routeSampler{inner: sdktrace.TraceIDRatioBased(cfg.SampleRatio)})),
+		sdktrace.WithSampler(routeSampler{inner: sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRatio))}),
 		sdktrace.WithBatcher(
 			newParallelExporter(
 				countingExporter{inner: exporter, stats: stats},

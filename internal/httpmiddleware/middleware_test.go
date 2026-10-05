@@ -2,12 +2,16 @@ package httpmiddleware
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"seat-reservation/internal/telemetry"
 
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -197,5 +201,66 @@ func TestReservationOutcomeBecomesEvent(t *testing.T) {
 	}
 	if strings.Count(line, "\n") != 1 {
 		t.Fatalf("expected exactly one log line: %s", line)
+	}
+}
+
+func TestRequestSpansAreLoggedAsOrderedTree(t *testing.T) {
+	provider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithSpanProcessor(telemetry.DefaultCollector),
+	)
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	defer otel.SetTracerProvider(previous)
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	router := http.NewServeMux()
+	router.HandleFunc("POST /shows/{id}/reserve", func(writer http.ResponseWriter, request *http.Request) {
+		ctx, reserve := telemetry.Start(request.Context(), "reservation.reserve")
+		stepContext, step := telemetry.Start(ctx, "reservation.lock_seats")
+		_, query := telemetry.Start(stepContext, "db SELECT")
+		query.End()
+		telemetry.Finish(step, errors.New("seats taken"), errors.New("seats taken"))
+		telemetry.Finish(reserve, nil)
+		RecordRequestOutcome(request, "reservation_declined", "reason", "seats_unavailable")
+		writeError(writer, http.StatusConflict, "seats_unavailable")
+	})
+
+	newObservedStack(logger, &routeObserver{}, router).ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/shows/abc/reserve", nil),
+	)
+
+	type spanLine struct {
+		Event string `json:"event"`
+		Name  string `json:"name"`
+		Depth int    `json:"depth"`
+		Index int    `json:"spanIndex"`
+	}
+	var spans []spanLine
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var parsed spanLine
+		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+			t.Fatalf("log line is not JSON: %s", line)
+		}
+		if parsed.Event == "span" {
+			spans = append(spans, parsed)
+		}
+	}
+	if len(spans) != 4 {
+		t.Fatalf("span lines = %d, want 4: %s", len(spans), logs.String())
+	}
+	want := []struct {
+		name  string
+		depth int
+	}{{"db SELECT", 3}, {"reservation.lock_seats", 2}, {"reservation.reserve", 1}, {"POST /shows/{id}/reserve", 0}}
+	for index, expected := range want {
+		if spans[index].Name != expected.name || spans[index].Depth != expected.depth {
+			t.Fatalf("span %d = %+v, want %v", index, spans[index], expected)
+		}
+	}
+	if spans[3].Index != 0 {
+		t.Fatalf("root span index = %d", spans[3].Index)
 	}
 }

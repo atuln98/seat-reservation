@@ -265,6 +265,7 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			startedAt := time.Now()
 			traceContext := TraceFromContext(request.Context())
 			requestID := RequestIDFromContext(request.Context())
+			traceID := oteltrace.SpanContextFromContext(request.Context()).TraceID()
 			outcome := &requestOutcome{}
 			request = request.WithContext(context.WithValue(request.Context(), requestOutcomeKey{}, outcome))
 			wrapped := &responseWriter{ResponseWriter: writer}
@@ -324,8 +325,22 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			if status >= http.StatusInternalServerError {
 				level = slog.LevelError
 			}
+			spans := telemetry.DefaultCollector.Take(traceID)
 			if level == slog.LevelInfo && status < http.StatusBadRequest && quietRoute(RoutePattern(request)) {
 				return
+			}
+			if len(spans) > 0 && shouldLogSpans(status, outcome) {
+				logSpans(logger, request, spans, spanLogContext{
+					requestID: requestID,
+					traceID:   traceContext.TraceID,
+					rootID:    traceContext.SpanID,
+					route:     RoutePattern(request),
+					status:    status,
+					duration:  time.Since(startedAt),
+					startedAt: startedAt,
+					errorCode: wrapped.errorCode,
+					outcome:   outcome,
+				})
 			}
 			logger.Log(request.Context(), level, "http request completed", attributes...)
 		})
@@ -433,4 +448,123 @@ func writeError(writer http.ResponseWriter, status int, code string) {
 	writer.Header().Set("Content-Type", "application/json")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(map[string]string{"error": code})
+}
+
+var spanLogLimiter = NewRateLimiter(10, 40)
+
+func shouldLogSpans(status int, outcome *requestOutcome) bool {
+	switch {
+	case status >= http.StatusInternalServerError:
+		return true
+	case outcome.name == "reservation_confirmed", outcome.name == "reservation_replayed", outcome.name == "reservation_cancelled":
+		return true
+	case outcome.name == "reservation_declined":
+		return spanLogLimiter.allow("decline:"+outcomeReason(outcome), time.Now())
+	case status >= http.StatusBadRequest:
+		return spanLogLimiter.allow("failure", time.Now())
+	}
+	return spanLogLimiter.allow("success", time.Now())
+}
+
+func outcomeReason(outcome *requestOutcome) string {
+	for index := 0; index+1 < len(outcome.attributes); index += 2 {
+		if key, _ := outcome.attributes[index].(string); key == "reason" {
+			return fmt.Sprint(outcome.attributes[index+1])
+		}
+	}
+	return ""
+}
+
+type spanLogContext struct {
+	requestID string
+	traceID   string
+	rootID    string
+	route     string
+	status    int
+	duration  time.Duration
+	startedAt time.Time
+	errorCode string
+	outcome   *requestOutcome
+}
+
+type orderedSpan struct {
+	record telemetry.SpanRecord
+	depth  int
+}
+
+func logSpans(logger *slog.Logger, request *http.Request, spans []telemetry.SpanRecord, info spanLogContext) {
+	children := make(map[string][]telemetry.SpanRecord, len(spans))
+	known := make(map[string]struct{}, len(spans)+1)
+	known[info.rootID] = struct{}{}
+	for _, span := range spans {
+		known[span.SpanID] = struct{}{}
+	}
+	for _, span := range spans {
+		parent := span.ParentID
+		if _, exists := known[parent]; !exists {
+			parent = info.rootID
+		}
+		children[parent] = append(children[parent], span)
+	}
+
+	rootName := info.route
+	if rootName == "" {
+		rootName = request.Method + " unmatched"
+	}
+	rootStatus := "unset"
+	if info.status >= http.StatusInternalServerError {
+		rootStatus = "error"
+	}
+	rootAttributes := fmt.Sprintf("http.response.status_code=%d", info.status)
+	if info.errorCode != "" {
+		rootAttributes += " error.code=" + info.errorCode
+	}
+	if info.outcome.name != "" {
+		rootAttributes += " app.outcome=" + info.outcome.name
+		for index := 0; index+1 < len(info.outcome.attributes); index += 2 {
+			if key, ok := info.outcome.attributes[index].(string); ok {
+				rootAttributes += " " + key + "=" + fmt.Sprint(info.outcome.attributes[index+1])
+			}
+		}
+	}
+	ordered := []orderedSpan{{
+		record: telemetry.SpanRecord{
+			SpanID:   info.rootID,
+			Name:     rootName,
+			Start:    info.startedAt,
+			Duration: info.duration,
+			Status:   rootStatus,
+			Attrs:    rootAttributes,
+		},
+	}}
+	var walk func(parent string, depth int)
+	walk = func(parent string, depth int) {
+		for _, child := range children[parent] {
+			ordered = append(ordered, orderedSpan{record: child, depth: depth})
+			walk(child.SpanID, depth+1)
+		}
+	}
+	walk(info.rootID, 1)
+
+	for index := len(ordered) - 1; index >= 0; index-- {
+		item := ordered[index]
+		logger.Info(
+			"span",
+			"event", "span",
+			"requestId", info.requestID,
+			"traceId", info.traceID,
+			"spanId", item.record.SpanID,
+			"parentSpanId", item.record.ParentID,
+			"route", rootName,
+			"spanIndex", index,
+			"depth", item.depth,
+			"indent", strings.Repeat("  ", item.depth),
+			"name", item.record.Name,
+			"startOffsetMs", float64(item.record.Start.Sub(info.startedAt).Microseconds())/1000,
+			"durationMs", float64(item.record.Duration.Microseconds())/1000,
+			"spanStatus", item.record.Status,
+			"spanError", item.record.Error,
+			"attrs", item.record.Attrs,
+		)
+	}
 }
