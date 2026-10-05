@@ -21,10 +21,16 @@ import (
 )
 
 type requestIDKey struct{}
+type requestOutcomeKey struct{}
 
 type TraceContext struct {
 	TraceID string
 	SpanID  string
+}
+
+type requestOutcome struct {
+	name       string
+	attributes []any
 }
 
 type RequestObserver interface {
@@ -110,6 +116,7 @@ func Trace(next http.Handler) http.Handler {
 			oteltrace.WithAttributes(
 				attribute.String("http.request.method", request.Method),
 				attribute.String("url.path", request.URL.Path),
+				attribute.String("request.id", RequestIDFromContext(request.Context())),
 			),
 		)
 		spanContext := span.SpanContext()
@@ -137,6 +144,9 @@ func Trace(next http.Handler) http.Handler {
 		status := wrapped.status
 		if status == 0 {
 			status = http.StatusOK
+		}
+		if tracedRequest.Pattern != "" {
+			span.SetName(request.Method + " " + tracedRequest.Pattern)
 		}
 		span.SetAttributes(
 			attribute.String("http.route", tracedRequest.Pattern),
@@ -178,6 +188,8 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			startedAt := time.Now()
 			traceContext := TraceFromContext(request.Context())
 			requestID := RequestIDFromContext(request.Context())
+			outcome := &requestOutcome{}
+			request = request.WithContext(context.WithValue(request.Context(), requestOutcomeKey{}, outcome))
 			wrapped := &responseWriter{ResponseWriter: writer}
 			next.ServeHTTP(wrapped, request)
 
@@ -185,8 +197,7 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
-			logger.Info(
-				"http request completed",
+			attributes := []any{
 				"event", "http_request_completed",
 				"requestId", requestID,
 				"traceId", traceContext.TraceID,
@@ -198,9 +209,43 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 				"bytes", wrapped.bytes,
 				"durationMs", time.Since(startedAt).Milliseconds(),
 				"clientIp", clientIP(request),
-			)
+			}
+			if outcome.name != "" {
+				attributes = append(attributes, "outcome", outcome.name)
+				attributes = append(attributes, outcome.attributes...)
+			}
+			logger.Info("http request completed", attributes...)
 		})
 	}
+}
+
+func RecordRequestOutcome(request *http.Request, name string, attributes ...any) {
+	outcome, _ := request.Context().Value(requestOutcomeKey{}).(*requestOutcome)
+	if outcome == nil {
+		return
+	}
+	outcome.name = name
+	outcome.attributes = append(outcome.attributes[:0], attributes...)
+	spanAttributes := make([]attribute.KeyValue, 0, len(attributes)/2)
+	for index := 0; index+1 < len(attributes); index += 2 {
+		key, ok := attributes[index].(string)
+		if !ok {
+			continue
+		}
+		switch value := attributes[index+1].(type) {
+		case string:
+			spanAttributes = append(spanAttributes, attribute.String(key, value))
+		case int:
+			spanAttributes = append(spanAttributes, attribute.Int(key, value))
+		case int64:
+			spanAttributes = append(spanAttributes, attribute.Int64(key, value))
+		case bool:
+			spanAttributes = append(spanAttributes, attribute.Bool(key, value))
+		case []string:
+			spanAttributes = append(spanAttributes, attribute.StringSlice(key, value))
+		}
+	}
+	oteltrace.SpanFromContext(request.Context()).AddEvent(name, oteltrace.WithAttributes(spanAttributes...))
 }
 
 func RequestIDFromContext(ctx context.Context) string {
