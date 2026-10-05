@@ -81,6 +81,9 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 		IdempotencyKey: body.IdempotencyKey,
 	})
 	if err != nil {
+		if writeContextError(writer, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, reservation.ErrShowNotFound):
 			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "show_not_found"})
@@ -127,6 +130,9 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 
 	cancelled, err := api.reservations.Cancel(request.Context(), reservationID, principal.UserID)
 	if err != nil {
+		if writeContextError(writer, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, reservation.ErrNotFound):
 			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "reservation_not_found"})

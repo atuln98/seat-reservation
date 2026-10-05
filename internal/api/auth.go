@@ -55,6 +55,9 @@ func (api *API) register(writer http.ResponseWriter, request *http.Request) {
 
 	authentication, err := api.users.Register(request.Context(), credentials.Email, credentials.Password)
 	if err != nil {
+		if writeContextError(writer, err) {
+			return
+		}
 		switch {
 		case errors.Is(err, user.ErrEmailExists):
 			writeJSON(writer, http.StatusConflict, map[string]string{"error": "email_already_registered"})
@@ -80,6 +83,9 @@ func (api *API) login(writer http.ResponseWriter, request *http.Request) {
 
 	authentication, err := api.users.Login(request.Context(), credentials.Email, credentials.Password)
 	if err != nil {
+		if writeContextError(writer, err) {
+			return
+		}
 		if errors.Is(err, user.ErrInvalidCredentials) {
 			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "invalid_credentials"})
 			return
@@ -101,6 +107,9 @@ func (api *API) currentUser(writer http.ResponseWriter, request *http.Request) {
 
 	existing, err := api.users.Get(request.Context(), principal.UserID)
 	if err != nil {
+		if writeContextError(writer, err) {
+			return
+		}
 		if errors.Is(err, user.ErrNotFound) {
 			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
 			return
