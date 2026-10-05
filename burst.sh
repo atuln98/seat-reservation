@@ -195,6 +195,24 @@ fail_burst() {
 	exit 1
 }
 
+check_integrity() {
+	local show=$1
+	local label=$2
+	local body
+	body=$(call_api 200 GET "/admin/shows/$show/integrity" "$admin_token" "")
+	local confirmed_seats_count owner_seats_count violation_count
+	confirmed_seats_count=$(json_number seats_confirmed <<<"$body")
+	owner_seats_count=$(json_number seats_with_active_owner <<<"$body")
+	violation_count=$(json_number violations <<<"$body")
+	printf 'integrity show=%s seats_confirmed=%s seats_with_active_owner=%s violations=%s ok=%s\n' \
+		"$label" "$confirmed_seats_count" "$owner_seats_count" "$violation_count" \
+		"$(grep -q '"ok":true' <<<"$body" && printf true || printf false)"
+	if ! grep -q '"ok":true' <<<"$body"; then
+		printf '%s\n' "$body" >&2
+		fail_burst "integrity check failed for $label"
+	fi
+}
+
 expected_confirmed=0
 expected_seat_taken=0
 expected_limit=0
@@ -439,8 +457,10 @@ done
 poll_file="$temporary_directory/invariant"
 poll_stop="$temporary_directory/invariant-stop"
 poll_errors="$temporary_directory/invariant-errors"
+integrity_results="$temporary_directory/integrity-results"
 : >"$poll_file"
 : >"$poll_errors"
+: >"$integrity_results"
 (
 	while [[ ! -e $poll_stop ]]; do
 		poll_body=$(curl --silent --max-time 10 "$base_url/shows/$show_id" 2>/dev/null || true)
@@ -452,6 +472,15 @@ poll_errors="$temporary_directory/invariant-errors"
 			printf '%s %s %s %s\n' "$poll_available" "$poll_held" "$poll_confirmed" "$poll_total" >>"$poll_file"
 		else
 			printf 'x\n' >>"$poll_errors"
+		fi
+		poll_integrity=$(curl --silent --max-time 10 --header "Authorization: Bearer $admin_token" \
+			"$base_url/admin/shows/$show_id/integrity" 2>/dev/null || true)
+		if grep -q '"ok":true' <<<"$poll_integrity"; then
+			printf 'ok\n' >>"$integrity_results"
+		elif grep -q '"ok":false' <<<"$poll_integrity"; then
+			printf 'violation\n' >>"$integrity_results"
+		else
+			printf 'unavailable\n' >>"$integrity_results"
 		fi
 		sleep 0.2
 	done
@@ -584,6 +613,14 @@ printf 'invariant_during_burst samples=%d violations=%d unavailable_samples=%d\n
 if (( poll_samples < 3 || poll_violations != 0 )); then
 	fail_burst "invariant available+held+confirmed=total during the burst"
 fi
+integrity_ok=$(grep -c '^ok$' "$integrity_results" || true)
+integrity_bad=$(grep -c '^violation$' "$integrity_results" || true)
+integrity_unavailable=$(grep -c '^unavailable$' "$integrity_results" || true)
+printf 'integrity_during_burst checks=%d violations=%d unavailable=%d\n' \
+	"$integrity_ok" "$integrity_bad" "$integrity_unavailable"
+if (( integrity_ok < 3 || integrity_bad != 0 )); then
+	fail_burst "cross-table integrity during the burst"
+fi
 
 if (( confirmed != 4 ||
 	seat_declines != requests - 4 ||
@@ -602,6 +639,7 @@ if (( confirmed != 4 ||
 	exit 1
 fi
 
+check_integrity "$show_id" main
 limit_show_payload=$(printf \
 	'{"name":"burst-%s-limit","seats":["L1","L2","L3","L4","L5","L6","L7","L8","L9","L10"],"price_paise":25000,"per_user_limit":4}' \
 	"$run_id")
@@ -677,6 +715,7 @@ if (( limit_confirmed != 4 ||
 	exit 1
 fi
 
+check_integrity "$limit_show_id" limit
 expected_confirmed=$((expected_confirmed + limit_confirmed))
 expected_limit=$((expected_limit + limit_declined))
 
@@ -812,6 +851,7 @@ printf 'phase_show final available=%s held=%s confirmed=%s total=%s reconciled=%
 if (( phase_held != 0 || phase_confirmed != 2 + race_winners || phase_total != 5 || phase_available + phase_confirmed != phase_total )); then
 	fail_burst "phase show reconciliation"
 fi
+check_integrity "$phase_show_id" phase
 
 cycle_show_payload=$(printf \
 	'{"name":"burst-%s-cycle","seats":["C1","C2","C3","C4","C5","C6","C7","C8"],"price_paise":25000,"per_user_limit":4}' \
@@ -862,6 +902,7 @@ if [[ $cycle_cancel_status != 200 || $cycle_replay_status != 200 || $cycle_repla
 	(( cycle_confirmed != 5 || cycle_available != 3 || cycle_total != 8 )); then
 	fail_burst "booking, cancelling part of the limit, and booking again"
 fi
+check_integrity "$cycle_show_id" cycle
 expected_confirmed=$((expected_confirmed + 4))
 expected_limit=$((expected_limit + 2))
 expected_replay=$((expected_replay + 1))

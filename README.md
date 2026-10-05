@@ -30,7 +30,7 @@ The default run sends 20,000 mixed single-seat and multi-seat reservation reques
 
 - **No double sale:** exactly one 201 per contested seat, no duplicate ownership, and every other request is a clean 409.
 - **Zero 5xx** and no client errors or timeouts.
-- **Invariant during and after the burst:** `available + held + confirmed = total` is sampled about every 200 ms while the burst runs, and again at the end.
+- **Cross-table integrity:** `GET /admin/shows/{id}/integrity` (admin only) compares the `seats` table with the `reservation_seats` and `reservations` tables in one consistent snapshot. Every confirmed seat must have exactly one active owner, no active owner may sit on an unconfirmed seat or a cancelled reservation, and nobody may hold more than the per-user limit. The script calls it about every 200 ms during the burst and again for every show at the end. `available + held + confirmed = total` is also printed, but it is computed from the one `seats` table and can't fail on its own, so the integrity check is the real double-booking guard.
 - **Multi-seat behaviour:** requests are all-or-nothing, overlapping requests run concurrently without deadlock, and a failed request leaves its other seat available.
 - **Idempotency:** a sequential retry returns the original reservation, the same key with different seats returns 409, 60 concurrent requests with one key create exactly one reservation, and 40 concurrent requests with one key and two different seats create exactly one.
 - **Per-user limit:** 10 parallel reservations against a limit of 4 confirm exactly 4.
