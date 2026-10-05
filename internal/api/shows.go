@@ -98,6 +98,9 @@ func (api *API) createShow(writer http.ResponseWriter, request *http.Request) {
 
 	created, err := api.shows.Create(request.Context(), input)
 	if err != nil {
+		if writeContextError(writer, err) {
+			return
+		}
 		api.logger.Error("show creation failed", "error", err)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 		return
@@ -115,6 +118,9 @@ func (api *API) getShow(writer http.ResponseWriter, request *http.Request) {
 
 	existing, err := api.shows.Get(request.Context(), showID)
 	if err != nil {
+		if writeContextError(writer, err) {
+			return
+		}
 		if errors.Is(err, show.ErrNotFound) {
 			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "show_not_found"})
 			return
