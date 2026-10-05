@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -190,10 +191,15 @@ func (service *Service) Reserve(ctx context.Context, input ReserveInput) (Reserv
 	created.Status = Status(createdStatus)
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO reservation_seats (reservation_id, seat_number)
-		SELECT $1::uuid, input.seat_number
-		FROM unnest($2::text[]) AS input(seat_number)
-	`, created.ID, sortedSeats); err != nil {
+		INSERT INTO reservation_seats (reservation_id, show_id, seat_number)
+		SELECT $1::uuid, $2::uuid, input.seat_number
+		FROM unnest($3::text[]) AS input(seat_number)
+	`, created.ID, input.ShowID, sortedSeats); err != nil {
+		var postgresError *pgconn.PgError
+		if errors.As(err, &postgresError) &&
+			postgresError.ConstraintName == "reservation_seats_active_show_seat_unique" {
+			return ReserveResult{}, ErrSeatsUnavailable
+		}
 		return ReserveResult{}, fmt.Errorf("insert reservation seats: %w", err)
 	}
 
@@ -305,6 +311,19 @@ func (service *Service) Cancel(ctx context.Context, reservationID string, userID
 		return Reservation{}, fmt.Errorf("release seats: %w", err)
 	}
 	if released.RowsAffected() != int64(len(existing.Seats)) {
+		return Reservation{}, ErrInvalidState
+	}
+
+	deactivated, err := tx.Exec(ctx, `
+		UPDATE reservation_seats
+		SET active = false
+		WHERE reservation_id = $1
+			AND active
+	`, reservationID)
+	if err != nil {
+		return Reservation{}, fmt.Errorf("deactivate reservation seats: %w", err)
+	}
+	if deactivated.RowsAffected() != int64(len(existing.Seats)) {
 		return Reservation{}, ErrInvalidState
 	}
 

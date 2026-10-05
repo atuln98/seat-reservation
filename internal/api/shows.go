@@ -61,9 +61,9 @@ func readCreateShow(writer http.ResponseWriter, request *http.Request) (show.Cre
 	var body createShowRequest
 	if err := decodeJSON(writer, request, &body); err != nil {
 		if errors.Is(err, errUnsupportedMediaType) {
-			writeJSON(writer, http.StatusUnsupportedMediaType, map[string]string{"error": "content_type_must_be_application_json"})
+			writeError(writer, http.StatusUnsupportedMediaType, "content_type_must_be_application_json")
 		} else {
-			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+			writeError(writer, http.StatusBadRequest, "invalid_request")
 		}
 		return show.CreateInput{}, false
 	}
@@ -106,7 +106,7 @@ func (api *API) createShow(writer http.ResponseWriter, request *http.Request) {
 			"event", "show_creation_failed",
 			"error", err,
 		)
-		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
 
@@ -124,7 +124,7 @@ func (api *API) createShow(writer http.ResponseWriter, request *http.Request) {
 func (api *API) getShow(writer http.ResponseWriter, request *http.Request) {
 	showID, ok := canonicalUUID(request.PathValue("id"))
 	if !ok {
-		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_show_id"})
+		writeError(writer, http.StatusBadRequest, "invalid_show_id")
 		return
 	}
 
@@ -134,7 +134,7 @@ func (api *API) getShow(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		if errors.Is(err, show.ErrNotFound) {
-			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "show_not_found"})
+			writeError(writer, http.StatusNotFound, "show_not_found")
 			return
 		}
 		requestLogger(api.logger, request).Error(
@@ -143,7 +143,7 @@ func (api *API) getShow(writer http.ResponseWriter, request *http.Request) {
 			"showId", showID,
 			"error", err,
 		)
-		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
 

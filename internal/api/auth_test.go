@@ -11,23 +11,32 @@ import (
 	"strings"
 	"testing"
 
+	"seat-reservation/internal/auth"
 	"seat-reservation/internal/user"
 )
 
 type stubUserOperations struct {
-	login func(context.Context, string, string) (user.Authentication, error)
+	register func(context.Context, string, string) (user.Authentication, error)
+	login    func(context.Context, string, string) (user.Authentication, error)
+	get      func(context.Context, string) (user.User, error)
 }
 
-func (stub stubUserOperations) Register(context.Context, string, string) (user.Authentication, error) {
-	panic("unexpected Register call")
+func (stub stubUserOperations) Register(ctx context.Context, email string, password string) (user.Authentication, error) {
+	if stub.register == nil {
+		panic("unexpected Register call")
+	}
+	return stub.register(ctx, email, password)
 }
 
 func (stub stubUserOperations) Login(ctx context.Context, email string, password string) (user.Authentication, error) {
 	return stub.login(ctx, email, password)
 }
 
-func (stub stubUserOperations) Get(context.Context, string) (user.User, error) {
-	panic("unexpected Get call")
+func (stub stubUserOperations) Get(ctx context.Context, userID string) (user.User, error) {
+	if stub.get == nil {
+		panic("unexpected Get call")
+	}
+	return stub.get(ctx, userID)
 }
 
 func TestCredentialsRequestValidate(t *testing.T) {
@@ -196,5 +205,33 @@ func TestLoginNonexistentEmail(t *testing.T) {
 	}
 	if !reflect.DeepEqual(body, map[string]string{"error": "invalid_credentials"}) {
 		t.Fatalf("body = %#v", body)
+	}
+}
+
+func TestRequireRoleUsesCurrentDatabaseRole(t *testing.T) {
+	const userID = "56d707ea-c3ca-423d-840d-f2cbce35ee5d"
+	api := &API{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		users: stubUserOperations{
+			get: func(_ context.Context, gotUserID string) (user.User, error) {
+				if gotUserID != userID {
+					t.Fatalf("user ID = %q, want %q", gotUserID, userID)
+				}
+				return user.User{ID: userID, Role: auth.RoleUser}, nil
+			},
+		},
+	}
+	called := false
+	handler := api.requireRole(auth.RoleAdmin, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	request := httptest.NewRequest(http.MethodPost, "/shows", nil)
+	response := serveAuthenticated(t, userID, auth.RoleAdmin, handler, request)
+
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+	if called {
+		t.Fatal("handler was called for a demoted user")
 	}
 }

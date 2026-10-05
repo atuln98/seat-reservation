@@ -37,9 +37,9 @@ func readReserveSeats(writer http.ResponseWriter, request *http.Request) (reserv
 	var body reserveSeatsRequest
 	if err := decodeJSON(writer, request, &body); err != nil {
 		if errors.Is(err, errUnsupportedMediaType) {
-			writeJSON(writer, http.StatusUnsupportedMediaType, map[string]string{"error": "content_type_must_be_application_json"})
+			writeError(writer, http.StatusUnsupportedMediaType, "content_type_must_be_application_json")
 		} else {
-			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+			writeError(writer, http.StatusBadRequest, "invalid_request")
 		}
 		return reserveSeatsRequest{}, false
 	}
@@ -58,13 +58,13 @@ func readReserveSeats(writer http.ResponseWriter, request *http.Request) (reserv
 func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) {
 	showID, ok := canonicalUUID(request.PathValue("id"))
 	if !ok {
-		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_show_id"})
+		writeError(writer, http.StatusBadRequest, "invalid_show_id")
 		return
 	}
 
 	principal, ok := auth.PrincipalFromContext(request.Context())
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication_required"})
+		writeError(writer, http.StatusUnauthorized, "authentication_required")
 		return
 	}
 
@@ -85,24 +85,18 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 		}
 		switch {
 		case errors.Is(err, reservation.ErrShowNotFound):
-			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "show_not_found"})
+			writeError(writer, http.StatusNotFound, "show_not_found")
 		case errors.Is(err, reservation.ErrSeatsUnavailable):
-			if api.metrics != nil {
-				api.metrics.Declined("seat_taken")
-			}
-			writeJSON(writer, http.StatusConflict, map[string]string{"error": "seats_unavailable"})
+			api.metrics.Declined("seat_taken")
+			writeError(writer, http.StatusConflict, "seats_unavailable")
 		case errors.Is(err, reservation.ErrUserLimitExceeded):
-			if api.metrics != nil {
-				api.metrics.Declined("per_user_limit")
-			}
-			writeJSON(writer, http.StatusConflict, map[string]string{"error": "seat_limit_exceeded"})
+			api.metrics.Declined("per_user_limit")
+			writeError(writer, http.StatusConflict, "seat_limit_exceeded")
 		case errors.Is(err, reservation.ErrIdempotencyConflict):
-			if api.metrics != nil {
-				api.metrics.Declined("idempotency_conflict")
-			}
-			writeJSON(writer, http.StatusConflict, map[string]string{"error": "idempotency_conflict"})
+			api.metrics.Declined("idempotency_conflict")
+			writeError(writer, http.StatusConflict, "idempotency_conflict")
 		case errors.Is(err, reservation.ErrAmountOutOfRange):
-			writeJSON(writer, http.StatusUnprocessableEntity, map[string]string{"error": "amount_out_of_range"})
+			writeError(writer, http.StatusUnprocessableEntity, "amount_out_of_range")
 		default:
 			requestLogger(api.logger, request).Error(
 				"seat reservation failed",
@@ -111,7 +105,7 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 				"userId", principal.UserID,
 				"error", err,
 			)
-			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+			writeError(writer, http.StatusInternalServerError, "internal_error")
 		}
 		return
 	}
@@ -119,10 +113,8 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 	status := http.StatusCreated
 	if result.Replayed {
 		status = http.StatusOK
-		if api.metrics != nil {
-			api.metrics.Replayed()
-		}
-	} else if api.metrics != nil {
+		api.metrics.Replayed()
+	} else {
 		api.metrics.Confirmed()
 	}
 	event := "reservation_confirmed"
@@ -146,13 +138,13 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Request) {
 	reservationID, ok := canonicalUUID(request.PathValue("id"))
 	if !ok {
-		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_reservation_id"})
+		writeError(writer, http.StatusBadRequest, "invalid_reservation_id")
 		return
 	}
 
 	principal, ok := auth.PrincipalFromContext(request.Context())
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication_required"})
+		writeError(writer, http.StatusUnauthorized, "authentication_required")
 		return
 	}
 
@@ -163,9 +155,9 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 		}
 		switch {
 		case errors.Is(err, reservation.ErrNotFound):
-			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "reservation_not_found"})
+			writeError(writer, http.StatusNotFound, "reservation_not_found")
 		case errors.Is(err, reservation.ErrInvalidState):
-			writeJSON(writer, http.StatusConflict, map[string]string{"error": "reservation_state_conflict"})
+			writeError(writer, http.StatusConflict, "reservation_state_conflict")
 		default:
 			requestLogger(api.logger, request).Error(
 				"reservation cancellation failed",
@@ -174,7 +166,7 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 				"userId", principal.UserID,
 				"error", err,
 			)
-			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+			writeError(writer, http.StatusInternalServerError, "internal_error")
 		}
 		return
 	}

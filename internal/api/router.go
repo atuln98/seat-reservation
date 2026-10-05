@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -53,6 +54,7 @@ func NewRouter(
 	authRate int,
 	authBurst int,
 	metricsBearerToken string,
+	requestTimeout time.Duration,
 ) http.Handler {
 	api := &API{
 		database:     database,
@@ -77,7 +79,7 @@ func NewRouter(
 	router.Handle("POST /auth/register", authLimiter.Middleware(http.HandlerFunc(api.register)))
 	router.Handle("POST /auth/login", authLimiter.Middleware(http.HandlerFunc(api.login)))
 	router.Handle("GET /users/me", tokens.Middleware(http.HandlerFunc(api.currentUser)))
-	router.Handle("POST /shows", tokens.RequireRole(auth.RoleAdmin, http.HandlerFunc(api.createShow)))
+	router.Handle("POST /shows", tokens.Middleware(api.requireRole(auth.RoleAdmin, http.HandlerFunc(api.createShow))))
 	router.HandleFunc("GET /shows/{id}", api.getShow)
 	router.Handle("POST /shows/{id}/reserve", tokens.Middleware(http.HandlerFunc(api.reserveSeats)))
 	router.Handle("POST /reservations/{id}/cancel", tokens.Middleware(http.HandlerFunc(api.cancelReservation)))
@@ -87,6 +89,7 @@ func NewRouter(
 	handler = httpmiddleware.Metrics(applicationMetrics)(handler)
 	handler = httpmiddleware.RequestID(handler)
 	handler = httpmiddleware.Trace(handler)
+	handler = httpmiddleware.RequestTimeout(requestTimeout, handler)
 
 	return handler
 }
@@ -128,6 +131,40 @@ func requestLogger(logger *slog.Logger, request *http.Request) *slog.Logger {
 		"traceId", traceContext.TraceID,
 		"spanId", traceContext.SpanID,
 	)
+}
+
+func (api *API) requireRole(role auth.Role, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		principal, ok := auth.PrincipalFromContext(request.Context())
+		if !ok {
+			writeError(writer, http.StatusUnauthorized, "authentication_required")
+			return
+		}
+
+		existing, err := api.users.Get(request.Context(), principal.UserID)
+		if err != nil {
+			if writeContextError(writer, err) {
+				return
+			}
+			if errors.Is(err, user.ErrNotFound) {
+				writeError(writer, http.StatusUnauthorized, "invalid_token")
+				return
+			}
+			requestLogger(api.logger, request).Error(
+				"authorization lookup failed",
+				"event", "authorization_lookup_failed",
+				"userId", principal.UserID,
+				"error", err,
+			)
+			writeError(writer, http.StatusInternalServerError, "internal_error")
+			return
+		}
+		if existing.Role != role {
+			writeError(writer, http.StatusForbidden, "insufficient_privileges")
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func writeJSON(writer http.ResponseWriter, status int, payload any) {

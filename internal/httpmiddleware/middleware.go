@@ -75,6 +75,14 @@ func BearerToken(token string, next http.Handler) http.Handler {
 	})
 }
 
+func RequestTimeout(timeout time.Duration, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		ctx, cancel := context.WithTimeout(request.Context(), timeout)
+		defer cancel()
+		next.ServeHTTP(writer, request.WithContext(ctx))
+	})
+}
+
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requestID := request.Header.Get("X-Request-ID")

@@ -27,6 +27,7 @@ services:
       DB_MAX_CONNECTIONS: 16
       AUTH_RATE_PER_SECOND: 5
       AUTH_RATE_BURST: 20
+      REQUEST_TIMEOUT: 10s
     depends_on:
       postgres:
         condition: service_healthy
