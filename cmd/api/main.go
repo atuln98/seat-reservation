@@ -59,8 +59,17 @@ func main() {
 	reservationService := reservation.NewService(pool)
 
 	server := &http.Server{
-		Addr:              cfg.Address,
-		Handler:           api.NewRouter(pool, logger, tokenManager, userService, showService, reservationService),
+		Addr: cfg.Address,
+		Handler: api.NewRouter(
+			pool,
+			logger,
+			tokenManager,
+			userService,
+			showService,
+			reservationService,
+			cfg.AuthRate,
+			cfg.AuthBurst,
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      90 * time.Second,

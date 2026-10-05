@@ -16,12 +16,22 @@ type Config struct {
 	AdminPassword   string
 	MigrationsDir   string
 	DatabaseMaxConn int32
+	AuthRate        int
+	AuthBurst       int
 	TokenTTL        time.Duration
 	ShutdownTimeout time.Duration
 }
 
 func Load() (Config, error) {
 	maxConnections, err := intFromEnvironment("DB_MAX_CONNECTIONS", 16)
+	if err != nil {
+		return Config{}, err
+	}
+	authRate, err := intFromEnvironment("AUTH_RATE_PER_SECOND", 5)
+	if err != nil {
+		return Config{}, err
+	}
+	authBurst, err := intFromEnvironment("AUTH_RATE_BURST", 20)
 	if err != nil {
 		return Config{}, err
 	}
@@ -44,6 +54,8 @@ func Load() (Config, error) {
 		AdminPassword:   os.Getenv("ADMIN_PASSWORD"),
 		MigrationsDir:   stringFromEnvironment("MIGRATIONS_DIR", "migrations"),
 		DatabaseMaxConn: int32(maxConnections),
+		AuthRate:        authRate,
+		AuthBurst:       authBurst,
 		TokenTTL:        tokenTTL,
 		ShutdownTimeout: shutdownTimeout,
 	}
@@ -60,6 +72,9 @@ func Load() (Config, error) {
 
 	if cfg.DatabaseMaxConn < 1 {
 		return Config{}, errors.New("DB_MAX_CONNECTIONS must be positive")
+	}
+	if cfg.AuthRate < 1 || cfg.AuthBurst < 1 {
+		return Config{}, errors.New("AUTH_RATE_PER_SECOND and AUTH_RATE_BURST must be positive")
 	}
 
 	return cfg, nil
