@@ -234,9 +234,9 @@ func TestCancelReservationResponses(t *testing.T) {
 		},
 		{
 			name:       "not owner",
-			err:        reservation.ErrNotOwner,
-			wantStatus: http.StatusForbidden,
-			wantError:  "reservation_not_owned",
+			err:        reservation.ErrNotFound,
+			wantStatus: http.StatusNotFound,
+			wantError:  "reservation_not_found",
 		},
 	}
 

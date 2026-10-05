@@ -18,7 +18,6 @@ var (
 	ErrIdempotencyConflict = errors.New("idempotency key reused with different request")
 	ErrAmountOutOfRange    = errors.New("reservation amount is out of range")
 	ErrNotFound            = errors.New("reservation not found")
-	ErrNotOwner            = errors.New("reservation belongs to another user")
 	ErrInvalidState        = errors.New("reservation state is invalid")
 )
 
@@ -230,20 +229,17 @@ func (service *Service) Cancel(ctx context.Context, reservationID string, userID
 	}()
 
 	var showID string
-	var ownerID string
 	err = tx.QueryRow(ctx, `
-		SELECT show_id::text, user_id::text
+		SELECT show_id::text
 		FROM reservations
 		WHERE id = $1
-	`, reservationID).Scan(&showID, &ownerID)
+			AND user_id = $2
+	`, reservationID, userID).Scan(&showID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Reservation{}, ErrNotFound
 	}
 	if err != nil {
 		return Reservation{}, fmt.Errorf("select reservation owner: %w", err)
-	}
-	if ownerID != userID {
-		return Reservation{}, ErrNotOwner
 	}
 
 	if err := acquireUserShowReservationLock(ctx, tx, userID, showID); err != nil {
@@ -255,7 +251,7 @@ func (service *Service) Cancel(ctx context.Context, reservationID string, userID
 		return Reservation{}, err
 	}
 	if existing.UserID != userID {
-		return Reservation{}, ErrNotOwner
+		return Reservation{}, ErrNotFound
 	}
 	if existing.Status == StatusCancelled {
 		if err := tx.Commit(ctx); err != nil {
