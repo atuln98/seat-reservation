@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"seat-reservation/internal/auth"
+	"seat-reservation/internal/httpmiddleware"
 	"seat-reservation/internal/reservation"
 )
 
@@ -94,6 +95,7 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 		default:
 			api.logger.Error(
 				"seat reservation failed",
+				"request_id", httpmiddleware.RequestIDFromContext(request.Context()),
 				"show_id", showID,
 				"user_id", principal.UserID,
 				"error", err,
@@ -133,6 +135,7 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 		default:
 			api.logger.Error(
 				"reservation cancellation failed",
+				"request_id", httpmiddleware.RequestIDFromContext(request.Context()),
 				"reservation_id", reservationID,
 				"user_id", principal.UserID,
 				"error", err,
