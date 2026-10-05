@@ -47,7 +47,7 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Address:         stringFromEnvironment("HTTP_ADDRESS", ":8080"),
+		Address:         httpAddress(),
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		JWTSecret:       os.Getenv("JWT_SECRET"),
 		AdminEmail:      os.Getenv("ADMIN_EMAIL"),
@@ -78,6 +78,16 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func httpAddress() string {
+	if address := os.Getenv("HTTP_ADDRESS"); address != "" {
+		return address
+	}
+	if port := os.Getenv("PORT"); port != "" {
+		return ":" + port
+	}
+	return ":8080"
 }
 
 func stringFromEnvironment(key string, fallback string) string {
