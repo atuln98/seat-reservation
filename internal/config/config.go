@@ -28,6 +28,7 @@ type Config struct {
 	OTLPEndpoint       string
 	OTLPUsername       string
 	OTLPPassword       string
+	OTLPSampleRatio    float64
 	TokenTTL           time.Duration
 	LokiFlushInterval  time.Duration
 	LokiRequestTimeout time.Duration
@@ -79,6 +80,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	otlpSampleRatio, err := floatFromEnvironment("OTLP_SAMPLE_RATIO", 1)
+	if err != nil {
+		return Config{}, err
+	}
 	otlpRequestTimeout, err := durationFromEnvironment("OTLP_REQUEST_TIMEOUT", 5*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -104,6 +109,7 @@ func Load() (Config, error) {
 		OTLPEndpoint:       os.Getenv("OTLP_ENDPOINT"),
 		OTLPUsername:       os.Getenv("OTLP_USERNAME"),
 		OTLPPassword:       os.Getenv("OTLP_PASSWORD"),
+		OTLPSampleRatio:    otlpSampleRatio,
 		TokenTTL:           tokenTTL,
 		LokiFlushInterval:  lokiFlushInterval,
 		LokiRequestTimeout: lokiRequestTimeout,
@@ -143,6 +149,9 @@ func Load() (Config, error) {
 	}
 	if cfg.LokiFlushInterval <= 0 || cfg.LokiRequestTimeout <= 0 {
 		return Config{}, errors.New("LOKI_FLUSH_INTERVAL and LOKI_REQUEST_TIMEOUT must be positive")
+	}
+	if cfg.OTLPSampleRatio < 0 || cfg.OTLPSampleRatio > 1 {
+		return Config{}, errors.New("OTLP_SAMPLE_RATIO must be between 0 and 1")
 	}
 	if cfg.OTLPRequestTimeout <= 0 {
 		return Config{}, errors.New("OTLP_REQUEST_TIMEOUT must be positive")
@@ -195,6 +204,20 @@ func durationFromEnvironment(key string, fallback time.Duration) (time.Duration,
 	parsed, err := time.ParseDuration(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be a duration: %w", key, err)
+	}
+
+	return parsed, nil
+}
+
+func floatFromEnvironment(key string, fallback float64) (float64, error) {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a number: %w", key, err)
 	}
 
 	return parsed, nil

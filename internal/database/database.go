@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"seat-reservation/internal/telemetry"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -15,6 +17,7 @@ func Open(ctx context.Context, databaseURL string, maxConnections int32, logger 
 		return nil, fmt.Errorf("parse database configuration: %w", err)
 	}
 
+	poolConfig.ConnConfig.Tracer = telemetry.NewPGXTracer()
 	poolConfig.MaxConns = maxConnections
 	poolConfig.MinConns = min(maxConnections, 4)
 	poolConfig.MaxConnLifetime = 30 * time.Minute

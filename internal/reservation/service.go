@@ -6,10 +6,15 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
+
+	"seat-reservation/internal/telemetry"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -58,7 +63,46 @@ func NewService(database *pgxpool.Pool) *Service {
 	return &Service{database: database}
 }
 
+var reserveDeclines = []error{
+	ErrShowNotFound,
+	ErrSeatsUnavailable,
+	ErrUserLimitExceeded,
+	ErrIdempotencyConflict,
+	ErrAmountOutOfRange,
+}
+
+var cancelDeclines = []error{ErrNotFound, ErrInvalidState}
+
 func (service *Service) Reserve(ctx context.Context, input ReserveInput) (ReserveResult, error) {
+	ctx, span := telemetry.Start(
+		ctx,
+		"reservation.reserve",
+		attribute.String("app.show_id", input.ShowID),
+		attribute.String("app.user_id", input.UserID),
+		attribute.Int("app.seat_count", len(input.SeatNumbers)),
+		attribute.String("app.idempotency_key", input.IdempotencyKey),
+	)
+	result, err := service.reserve(ctx, input)
+	if err == nil {
+		outcome := "confirmed"
+		if result.Replayed {
+			outcome = "replayed"
+		}
+		span.SetAttributes(
+			attribute.String("app.outcome", outcome),
+			attribute.String("app.reservation_id", result.Reservation.ID),
+			attribute.Int64("app.amount_paise", result.Reservation.AmountPaise),
+		)
+	}
+	telemetry.Finish(span, err, reserveDeclines...)
+	return result, err
+}
+
+func step(ctx context.Context, name string, attributes ...attribute.KeyValue) (context.Context, oteltrace.Span) {
+	return telemetry.Start(ctx, "reservation."+name, attributes...)
+}
+
+func (service *Service) reserve(ctx context.Context, input ReserveInput) (ReserveResult, error) {
 	sortedSeats := append([]string(nil), input.SeatNumbers...)
 	sort.Strings(sortedSeats)
 
@@ -70,28 +114,39 @@ func (service *Service) Reserve(ctx context.Context, input ReserveInput) (Reserv
 		_ = tx.Rollback(ctx)
 	}()
 
-	if err := acquireUserShowReservationLock(ctx, tx, input.UserID, input.ShowID); err != nil {
-		return ReserveResult{}, err
+	lockContext, lockSpan := step(ctx, "lock_user_show")
+	lockErr := acquireUserShowReservationLock(lockContext, tx, input.UserID, input.ShowID)
+	telemetry.Finish(lockSpan, lockErr)
+	if lockErr != nil {
+		return ReserveResult{}, lockErr
 	}
 
-	existing, err := loadByIdempotencyKey(ctx, tx, input.UserID, input.IdempotencyKey)
+	idempotencyContext, idempotencySpan := step(ctx, "check_idempotency")
+	existing, err := loadByIdempotencyKey(idempotencyContext, tx, input.UserID, input.IdempotencyKey)
 	if err == nil {
+		idempotencySpan.SetAttributes(attribute.Bool("app.key_found", true))
 		if !sameRequest(existing, input.ShowID, sortedSeats) {
+			telemetry.Finish(idempotencySpan, ErrIdempotencyConflict, ErrIdempotencyConflict)
 			return ReserveResult{}, ErrIdempotencyConflict
 		}
+		telemetry.Finish(idempotencySpan, nil)
 		if err := tx.Commit(ctx); err != nil {
 			return ReserveResult{}, fmt.Errorf("commit idempotent replay: %w", err)
 		}
 		return ReserveResult{Reservation: existing, Replayed: true}, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		telemetry.Finish(idempotencySpan, err)
 		return ReserveResult{}, err
 	}
+	idempotencySpan.SetAttributes(attribute.Bool("app.key_found", false))
+	telemetry.Finish(idempotencySpan, nil)
 
+	limitContext, limitSpan := step(ctx, "check_limit")
 	var pricePaise int64
 	var perUserLimit int64
 	var activeSeats int64
-	err = tx.QueryRow(ctx, `
+	err = tx.QueryRow(limitContext, `
 		SELECT
 			show.price_paise,
 			show.per_user_limit,
@@ -108,54 +163,53 @@ func (service *Service) Reserve(ctx context.Context, input ReserveInput) (Reserv
 		WHERE show.id = $1
 	`, input.ShowID, input.UserID).Scan(&pricePaise, &perUserLimit, &activeSeats)
 	if errors.Is(err, pgx.ErrNoRows) {
+		telemetry.Finish(limitSpan, ErrShowNotFound, ErrShowNotFound)
 		return ReserveResult{}, ErrShowNotFound
 	}
 	if err != nil {
-		return ReserveResult{}, fmt.Errorf("select show and active seats: %w", err)
+		wrapped := fmt.Errorf("select show and active seats: %w", err)
+		telemetry.Finish(limitSpan, wrapped)
+		return ReserveResult{}, wrapped
 	}
+	limitSpan.SetAttributes(
+		attribute.Int64("app.active_seats", activeSeats),
+		attribute.Int64("app.per_user_limit", perUserLimit),
+		attribute.Int("app.requested_seats", len(input.SeatNumbers)),
+		attribute.Int64("app.price_paise", pricePaise),
+	)
 	if activeSeats+int64(len(input.SeatNumbers)) > perUserLimit {
+		telemetry.Finish(limitSpan, ErrUserLimitExceeded, ErrUserLimitExceeded)
 		return ReserveResult{}, ErrUserLimitExceeded
 	}
 
 	if len(input.SeatNumbers) > 0 && pricePaise > math.MaxInt64/int64(len(input.SeatNumbers)) {
+		telemetry.Finish(limitSpan, ErrAmountOutOfRange, ErrAmountOutOfRange)
 		return ReserveResult{}, ErrAmountOutOfRange
 	}
+	telemetry.Finish(limitSpan, nil)
 	amountPaise := pricePaise * int64(len(input.SeatNumbers))
 
-	rows, err := tx.Query(ctx, `
-		SELECT seat_number
-		FROM seats
-		WHERE show_id = $1
-			AND seat_number = ANY($2::text[])
-			AND state = 'available'
-		ORDER BY seat_number
-		FOR UPDATE
-	`, input.ShowID, sortedSeats)
+	seatContext, seatSpan := step(ctx, "lock_seats", attribute.String("app.seats", strings.Join(sortedSeats, ",")))
+	lockedSeats, err := lockAvailableSeats(seatContext, tx, input.ShowID, sortedSeats)
 	if err != nil {
-		return ReserveResult{}, fmt.Errorf("lock seats: %w", err)
+		telemetry.Finish(seatSpan, err)
+		return ReserveResult{}, err
 	}
-
-	lockedSeats := make([]string, 0, len(sortedSeats))
-	for rows.Next() {
-		var seatNumber string
-		if err := rows.Scan(&seatNumber); err != nil {
-			rows.Close()
-			return ReserveResult{}, fmt.Errorf("scan locked seat: %w", err)
-		}
-		lockedSeats = append(lockedSeats, seatNumber)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return ReserveResult{}, fmt.Errorf("iterate locked seats: %w", err)
-	}
-	rows.Close()
+	seatSpan.SetAttributes(
+		attribute.Int("app.requested_seats", len(sortedSeats)),
+		attribute.Int("app.locked_seats", len(lockedSeats)),
+	)
 	if len(lockedSeats) != len(sortedSeats) {
+		seatSpan.SetAttributes(attribute.StringSlice("app.unavailable_seats", missingSeats(sortedSeats, lockedSeats)))
+		telemetry.Finish(seatSpan, ErrSeatsUnavailable, ErrSeatsUnavailable)
 		return ReserveResult{}, ErrSeatsUnavailable
 	}
+	telemetry.Finish(seatSpan, nil)
 
+	insertContext, insertSpan := step(ctx, "insert_reservation")
 	var created Reservation
 	var createdStatus string
-	err = tx.QueryRow(ctx, `
+	err = tx.QueryRow(insertContext, `
 		INSERT INTO reservations (
 			show_id,
 			user_id,
@@ -173,24 +227,37 @@ func (service *Service) Reserve(ctx context.Context, input ReserveInput) (Reserv
 		&createdStatus,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		existing, loadErr := loadByIdempotencyKey(ctx, tx, input.UserID, input.IdempotencyKey)
+		insertSpan.SetAttributes(attribute.Bool("app.concurrent_replay", true))
+		existing, loadErr := loadByIdempotencyKey(insertContext, tx, input.UserID, input.IdempotencyKey)
 		if loadErr != nil {
+			telemetry.Finish(insertSpan, loadErr)
 			return ReserveResult{}, loadErr
 		}
 		if !sameRequest(existing, input.ShowID, sortedSeats) {
+			telemetry.Finish(insertSpan, ErrIdempotencyConflict, ErrIdempotencyConflict)
 			return ReserveResult{}, ErrIdempotencyConflict
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return ReserveResult{}, fmt.Errorf("commit concurrent idempotent replay: %w", err)
+		telemetry.Finish(insertSpan, nil)
+		commitContext, commitSpan := step(ctx, "commit")
+		if err := tx.Commit(commitContext); err != nil {
+			wrapped := fmt.Errorf("commit concurrent idempotent replay: %w", err)
+			telemetry.Finish(commitSpan, wrapped)
+			return ReserveResult{}, wrapped
 		}
+		telemetry.Finish(commitSpan, nil)
 		return ReserveResult{Reservation: existing, Replayed: true}, nil
 	}
 	if err != nil {
-		return ReserveResult{}, fmt.Errorf("insert reservation: %w", err)
+		wrapped := fmt.Errorf("insert reservation: %w", err)
+		telemetry.Finish(insertSpan, wrapped)
+		return ReserveResult{}, wrapped
 	}
 	created.Status = Status(createdStatus)
+	insertSpan.SetAttributes(attribute.String("app.reservation_id", created.ID))
+	telemetry.Finish(insertSpan, nil)
 
-	if _, err := tx.Exec(ctx, `
+	confirmContext, confirmSpan := step(ctx, "confirm_seats")
+	if _, err := tx.Exec(confirmContext, `
 		INSERT INTO reservation_seats (reservation_id, show_id, seat_number)
 		SELECT $1::uuid, $2::uuid, input.seat_number
 		FROM unnest($3::text[]) AS input(seat_number)
@@ -198,12 +265,16 @@ func (service *Service) Reserve(ctx context.Context, input ReserveInput) (Reserv
 		var postgresError *pgconn.PgError
 		if errors.As(err, &postgresError) &&
 			postgresError.ConstraintName == "reservation_seats_active_show_seat_unique" {
+			confirmSpan.SetAttributes(attribute.String("app.constraint", postgresError.ConstraintName))
+			telemetry.Finish(confirmSpan, ErrSeatsUnavailable, ErrSeatsUnavailable)
 			return ReserveResult{}, ErrSeatsUnavailable
 		}
-		return ReserveResult{}, fmt.Errorf("insert reservation seats: %w", err)
+		wrapped := fmt.Errorf("insert reservation seats: %w", err)
+		telemetry.Finish(confirmSpan, wrapped)
+		return ReserveResult{}, wrapped
 	}
 
-	updated, err := tx.Exec(ctx, `
+	updated, err := tx.Exec(confirmContext, `
 		UPDATE seats
 		SET state = 'confirmed'
 		WHERE show_id = $1
@@ -211,21 +282,94 @@ func (service *Service) Reserve(ctx context.Context, input ReserveInput) (Reserv
 			AND state = 'available'
 	`, input.ShowID, sortedSeats)
 	if err != nil {
-		return ReserveResult{}, fmt.Errorf("confirm seats: %w", err)
+		wrapped := fmt.Errorf("confirm seats: %w", err)
+		telemetry.Finish(confirmSpan, wrapped)
+		return ReserveResult{}, wrapped
 	}
+	confirmSpan.SetAttributes(attribute.Int64("app.seats_confirmed", updated.RowsAffected()))
 	if updated.RowsAffected() != int64(len(sortedSeats)) {
+		telemetry.Finish(confirmSpan, ErrSeatsUnavailable, ErrSeatsUnavailable)
 		return ReserveResult{}, ErrSeatsUnavailable
 	}
+	telemetry.Finish(confirmSpan, nil)
 
 	created.Seats = sortedSeats
-	if err := tx.Commit(ctx); err != nil {
-		return ReserveResult{}, fmt.Errorf("commit reservation: %w", err)
+	commitContext, commitSpan := step(ctx, "commit")
+	if err := tx.Commit(commitContext); err != nil {
+		wrapped := fmt.Errorf("commit reservation: %w", err)
+		telemetry.Finish(commitSpan, wrapped)
+		return ReserveResult{}, wrapped
 	}
+	telemetry.Finish(commitSpan, nil)
 
 	return ReserveResult{Reservation: created}, nil
 }
 
+func lockAvailableSeats(ctx context.Context, tx pgx.Tx, showID string, sortedSeats []string) ([]string, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT seat_number
+		FROM seats
+		WHERE show_id = $1
+			AND seat_number = ANY($2::text[])
+			AND state = 'available'
+		ORDER BY seat_number
+		FOR UPDATE
+	`, showID, sortedSeats)
+	if err != nil {
+		return nil, fmt.Errorf("lock seats: %w", err)
+	}
+
+	lockedSeats := make([]string, 0, len(sortedSeats))
+	for rows.Next() {
+		var seatNumber string
+		if err := rows.Scan(&seatNumber); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan locked seat: %w", err)
+		}
+		lockedSeats = append(lockedSeats, seatNumber)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate locked seats: %w", err)
+	}
+	rows.Close()
+	return lockedSeats, nil
+}
+
+func missingSeats(requested []string, locked []string) []string {
+	present := make(map[string]struct{}, len(locked))
+	for _, seat := range locked {
+		present[seat] = struct{}{}
+	}
+	missing := make([]string, 0, len(requested))
+	for _, seat := range requested {
+		if _, exists := present[seat]; !exists {
+			missing = append(missing, seat)
+		}
+	}
+	return missing
+}
+
 func (service *Service) Cancel(ctx context.Context, reservationID string, userID string) (Reservation, error) {
+	ctx, span := telemetry.Start(
+		ctx,
+		"reservation.cancel",
+		attribute.String("app.reservation_id", reservationID),
+		attribute.String("app.user_id", userID),
+	)
+	cancelled, err := service.cancel(ctx, reservationID, userID)
+	if err == nil {
+		span.SetAttributes(
+			attribute.String("app.outcome", string(cancelled.Status)),
+			attribute.String("app.show_id", cancelled.ShowID),
+			attribute.Int("app.seat_count", len(cancelled.Seats)),
+		)
+	}
+	telemetry.Finish(span, err, cancelDeclines...)
+	return cancelled, err
+}
+
+func (service *Service) cancel(ctx context.Context, reservationID string, userID string) (Reservation, error) {
 	tx, err := service.database.Begin(ctx)
 	if err != nil {
 		return Reservation{}, fmt.Errorf("begin cancellation: %w", err)

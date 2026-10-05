@@ -5,24 +5,39 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"seat-reservation/internal/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type principalKey struct{}
 
 func (manager *TokenManager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, span := telemetry.Start(request.Context(), "auth.authenticate")
 		header := request.Header.Get("Authorization")
 		scheme, token, found := strings.Cut(header, " ")
 		if !found || !strings.EqualFold(scheme, "Bearer") || token == "" {
+			span.SetAttributes(attribute.String("app.outcome", "rejected"), attribute.String("app.reject_reason", "missing_bearer_token"))
+			span.End()
 			writeAuthError(writer, http.StatusUnauthorized, "authentication_required")
 			return
 		}
 
 		principal, err := manager.Parse(token)
 		if err != nil {
+			span.SetAttributes(attribute.String("app.outcome", "rejected"), attribute.String("app.reject_reason", err.Error()))
+			span.End()
 			writeAuthError(writer, http.StatusUnauthorized, "invalid_token")
 			return
 		}
+		span.SetAttributes(
+			attribute.String("app.outcome", "authenticated"),
+			attribute.String("app.user_id", principal.UserID),
+			attribute.String("app.role", string(principal.Role)),
+		)
+		span.End()
 
 		ctx := context.WithValue(request.Context(), principalKey{}, principal)
 		next.ServeHTTP(writer, request.WithContext(ctx))

@@ -8,10 +8,12 @@ import (
 	"strings"
 
 	"seat-reservation/internal/auth"
+	"seat-reservation/internal/telemetry"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -45,6 +47,16 @@ func NewService(database *pgxpool.Pool, tokens *auth.TokenManager) *Service {
 }
 
 func (service *Service) Register(ctx context.Context, email string, password string) (Authentication, error) {
+	ctx, span := telemetry.Start(ctx, "user.register")
+	result, err := service.register(ctx, email, password)
+	if err == nil {
+		span.SetAttributes(attribute.String("app.user_id", result.ID), attribute.String("app.role", string(result.Role)))
+	}
+	telemetry.Finish(span, err, ErrEmailExists, ErrInvalidEmail, ErrInvalidPassword)
+	return result, err
+}
+
+func (service *Service) register(ctx context.Context, email string, password string) (Authentication, error) {
 	normalizedEmail, err := NormalizeEmail(email)
 	if err != nil {
 		return Authentication{}, err
@@ -53,7 +65,9 @@ func (service *Service) Register(ctx context.Context, email string, password str
 		return Authentication{}, err
 	}
 
+	_, hashSpan := telemetry.Start(ctx, "user.hash_password", attribute.Int("app.bcrypt_cost", 12))
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
+	telemetry.Finish(hashSpan, err)
 	if err != nil {
 		return Authentication{}, fmt.Errorf("hash password: %w", err)
 	}
@@ -76,6 +90,16 @@ func (service *Service) Register(ctx context.Context, email string, password str
 }
 
 func (service *Service) Login(ctx context.Context, email string, password string) (Authentication, error) {
+	ctx, span := telemetry.Start(ctx, "user.login")
+	result, err := service.login(ctx, email, password)
+	if err == nil {
+		span.SetAttributes(attribute.String("app.user_id", result.ID), attribute.String("app.role", string(result.Role)))
+	}
+	telemetry.Finish(span, err, ErrInvalidCredentials)
+	return result, err
+}
+
+func (service *Service) login(ctx context.Context, email string, password string) (Authentication, error) {
 	normalizedEmail, err := NormalizeEmail(email)
 	if err != nil {
 		return Authentication{}, ErrInvalidCredentials
@@ -95,7 +119,10 @@ func (service *Service) Login(ctx context.Context, email string, password string
 		return Authentication{}, fmt.Errorf("select user: %w", err)
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password)); err != nil {
+	_, verifySpan := telemetry.Start(ctx, "user.verify_password")
+	compareErr := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(password))
+	telemetry.Finish(verifySpan, compareErr, bcrypt.ErrMismatchedHashAndPassword)
+	if compareErr != nil {
 		return Authentication{}, ErrInvalidCredentials
 	}
 

@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"sort"
 
+	"seat-reservation/internal/telemetry"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 const DefaultPerUserLimit = 4
@@ -59,6 +62,22 @@ func NewService(database *pgxpool.Pool) *Service {
 }
 
 func (service *Service) Create(ctx context.Context, input CreateInput) (Show, error) {
+	ctx, span := telemetry.Start(
+		ctx,
+		"show.create",
+		attribute.Int("app.seat_count", len(input.SeatNumbers)),
+		attribute.Int64("app.price_paise", input.PricePaise),
+		attribute.Int("app.per_user_limit", input.PerUserLimit),
+	)
+	created, err := service.create(ctx, input)
+	if err == nil {
+		span.SetAttributes(attribute.String("app.show_id", created.ID))
+	}
+	telemetry.Finish(span, err)
+	return created, err
+}
+
+func (service *Service) create(ctx context.Context, input CreateInput) (Show, error) {
 	seatNumbers := append([]string(nil), input.SeatNumbers...)
 	sort.Strings(seatNumbers)
 
@@ -109,6 +128,21 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (Show, er
 }
 
 func (service *Service) Get(ctx context.Context, showID string) (Show, error) {
+	ctx, span := telemetry.Start(ctx, "show.get", attribute.String("app.show_id", showID))
+	existing, err := service.get(ctx, showID)
+	if err == nil {
+		span.SetAttributes(
+			attribute.Int("app.seats_total", existing.Counts.Total),
+			attribute.Int("app.seats_available", existing.Counts.Available),
+			attribute.Int("app.seats_held", existing.Counts.Held),
+			attribute.Int("app.seats_confirmed", existing.Counts.Confirmed),
+		)
+	}
+	telemetry.Finish(span, err, ErrNotFound)
+	return existing, err
+}
+
+func (service *Service) get(ctx context.Context, showID string) (Show, error) {
 	var existing Show
 	err := service.database.QueryRow(ctx, `
 		SELECT id::text, name, price_paise, per_user_limit

@@ -33,6 +33,13 @@ type LogBroadcastStats interface {
 	QueueEntries() uint64
 }
 
+type TraceExportStats interface {
+	EndedTotal() uint64
+	ExportedTotal() uint64
+	ExportErrorsTotal() uint64
+	ExportFailedSpansTotal() uint64
+}
+
 type showSeatCounts struct {
 	showID    string
 	available int64
@@ -167,6 +174,39 @@ func (metrics *Metrics) RegisterLogBroadcast(stats LogBroadcastStats) {
 			Help:      "Log records currently waiting for external delivery.",
 		}, func() float64 {
 			return float64(stats.QueueEntries())
+		}),
+	)
+}
+
+func (metrics *Metrics) RegisterTraceExport(stats TraceExportStats) {
+	metrics.registry.MustRegister(
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "trace_spans_ended_total",
+			Help:      "Spans ended by the tracer, including spans that were not exported.",
+		}, func() float64 {
+			return float64(stats.EndedTotal())
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "trace_spans_exported_total",
+			Help:      "Spans delivered to the trace backend.",
+		}, func() float64 {
+			return float64(stats.ExportedTotal())
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "trace_export_errors_total",
+			Help:      "Trace export batches that failed.",
+		}, func() float64 {
+			return float64(stats.ExportErrorsTotal())
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "trace_spans_export_failed_total",
+			Help:      "Spans lost because their export batch failed.",
+		}, func() float64 {
+			return float64(stats.ExportFailedSpansTotal())
 		}),
 	)
 }

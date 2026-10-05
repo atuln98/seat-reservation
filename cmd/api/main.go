@@ -58,12 +58,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	traceProvider, err := telemetry.New(ctx, telemetry.Config{
+	traceProvider, traceStats, err := telemetry.New(ctx, telemetry.Config{
 		Endpoint:       cfg.OTLPEndpoint,
 		Username:       cfg.OTLPUsername,
 		Password:       cfg.OTLPPassword,
 		Environment:    cfg.LokiEnvironment,
 		RequestTimeout: cfg.OTLPRequestTimeout,
+		SampleRatio:    cfg.OTLPSampleRatio,
 	})
 	if err != nil {
 		fatal(logger, broadcaster, "telemetry startup failed", "telemetry_startup_failed", err)
@@ -94,6 +95,7 @@ func main() {
 	reservationService := reservation.NewService(pool)
 	applicationMetrics := metrics.New(pool)
 	applicationMetrics.RegisterLogBroadcast(broadcaster)
+	applicationMetrics.RegisterTraceExport(traceStats)
 
 	server := &http.Server{
 		Addr: cfg.Address,
