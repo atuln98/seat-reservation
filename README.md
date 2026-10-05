@@ -27,6 +27,10 @@ The default run sends 20,000 mixed single-seat and multi-seat reservation reques
 
 Prometheus metrics are exposed at `/metrics`. Set `METRICS_BEARER_TOKEN` to protect the endpoint for a hosted scraper. Reservation outcomes and HTTP request metrics are held in process memory. Per-show seat gauges are read from PostgreSQL and cached for five seconds, so available, held, confirmed, and total values reconcile with `GET /shows/{id}` without querying the database on every scrape.
 
+Public Grafana dashboard: `https://robustturret3544.grafana.net/public-dashboards/fad3834ab4e9410381c30d957e45401a`
+
+Grafana Cloud scrapes and stores the production metrics once per minute. The raw endpoint requires the deployment's bearer token:
+
 ```bash
 curl -H "Authorization: Bearer $METRICS_BEARER_TOKEN" \
   https://api-production-45a5.up.railway.app/metrics
