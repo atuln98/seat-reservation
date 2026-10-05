@@ -128,8 +128,6 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 		switch {
 		case errors.Is(err, reservation.ErrNotFound):
 			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "reservation_not_found"})
-		case errors.Is(err, reservation.ErrNotOwner):
-			writeJSON(writer, http.StatusForbidden, map[string]string{"error": "reservation_not_owned"})
 		case errors.Is(err, reservation.ErrInvalidState):
 			writeJSON(writer, http.StatusConflict, map[string]string{"error": "reservation_state_conflict"})
 		default:
