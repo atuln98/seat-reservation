@@ -14,6 +14,7 @@ import (
 	"seat-reservation/internal/auth"
 	"seat-reservation/internal/config"
 	"seat-reservation/internal/database"
+	"seat-reservation/internal/show"
 	"seat-reservation/internal/user"
 )
 
@@ -53,10 +54,11 @@ func main() {
 		logger.Error("admin bootstrap failed", "error", err)
 		os.Exit(1)
 	}
+	showService := show.NewService(pool)
 
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           api.NewRouter(pool, logger, tokenManager, userService),
+		Handler:           api.NewRouter(pool, logger, tokenManager, userService, showService),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      90 * time.Second,

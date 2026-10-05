@@ -9,6 +9,7 @@ import (
 
 	"seat-reservation/internal/auth"
 	"seat-reservation/internal/httpmiddleware"
+	"seat-reservation/internal/show"
 	"seat-reservation/internal/user"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +19,7 @@ type API struct {
 	database *pgxpool.Pool
 	logger   *slog.Logger
 	users    userOperations
+	shows    showOperations
 }
 
 type userOperations interface {
@@ -26,16 +28,23 @@ type userOperations interface {
 	Get(context.Context, string) (user.User, error)
 }
 
+type showOperations interface {
+	Create(context.Context, show.CreateInput) (show.Show, error)
+	Get(context.Context, string) (show.Show, error)
+}
+
 func NewRouter(
 	database *pgxpool.Pool,
 	logger *slog.Logger,
 	tokens *auth.TokenManager,
 	users *user.Service,
+	shows *show.Service,
 ) http.Handler {
 	api := &API{
 		database: database,
 		logger:   logger,
 		users:    users,
+		shows:    shows,
 	}
 
 	router := http.NewServeMux()
@@ -46,6 +55,8 @@ func NewRouter(
 	router.HandleFunc("POST /auth/register", api.register)
 	router.HandleFunc("POST /auth/login", api.login)
 	router.Handle("GET /users/me", tokens.Middleware(http.HandlerFunc(api.currentUser)))
+	router.Handle("POST /shows", tokens.RequireRole(auth.RoleAdmin, http.HandlerFunc(api.createShow)))
+	router.HandleFunc("GET /shows/{id}", api.getShow)
 
 	handler := httpmiddleware.Recover(logger)(router)
 	handler = httpmiddleware.AccessLog(logger)(handler)

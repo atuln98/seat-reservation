@@ -122,3 +122,56 @@ func TestMiddlewareAddsPrincipal(t *testing.T) {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
 	}
 }
+
+func TestRequireRole(t *testing.T) {
+	manager, err := NewTokenManager("test-jwt-secret-with-at-least-32-bytes", "seat-reservation", time.Hour)
+	if err != nil {
+		t.Fatalf("NewTokenManager() error = %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		role       Role
+		wantStatus int
+		wantCalled bool
+	}{
+		{
+			name:       "admin accepted",
+			role:       RoleAdmin,
+			wantStatus: http.StatusNoContent,
+			wantCalled: true,
+		},
+		{
+			name:       "user forbidden",
+			role:       RoleUser,
+			wantStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			token, err := manager.Issue("a8ba0dc2-bfd8-46a6-8419-05ca8e99251c", test.role)
+			if err != nil {
+				t.Fatalf("Issue() error = %v", err)
+			}
+
+			called := false
+			next := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				called = true
+				writer.WriteHeader(http.StatusNoContent)
+			})
+			request := httptest.NewRequest(http.MethodPost, "/shows", nil)
+			request.Header.Set("Authorization", "Bearer "+token)
+			response := httptest.NewRecorder()
+
+			manager.RequireRole(RoleAdmin, next).ServeHTTP(response, request)
+
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
+			}
+			if called != test.wantCalled {
+				t.Fatalf("called = %t, want %t", called, test.wantCalled)
+			}
+		})
+	}
+}
