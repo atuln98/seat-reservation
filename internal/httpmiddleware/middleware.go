@@ -3,6 +3,7 @@ package httpmiddleware
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
@@ -51,6 +52,19 @@ func Metrics(observer RequestObserver) func(http.Handler) http.Handler {
 			observer.ObserveRequest(request.Method, request.Pattern, status, time.Since(startedAt))
 		})
 	}
+}
+
+func BearerToken(token string, next http.Handler) http.Handler {
+	expected := []byte("Bearer " + token)
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		provided := []byte(request.Header.Get("Authorization"))
+		if len(provided) != len(expected) || subtle.ConstantTimeCompare(provided, expected) != 1 {
+			writer.Header().Set("WWW-Authenticate", "Bearer")
+			writeError(writer, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next.ServeHTTP(writer, request)
+	})
 }
 
 func RequestID(next http.Handler) http.Handler {

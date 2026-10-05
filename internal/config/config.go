@@ -9,17 +9,18 @@ import (
 )
 
 type Config struct {
-	Address         string
-	DatabaseURL     string
-	JWTSecret       string
-	AdminEmail      string
-	AdminPassword   string
-	MigrationsDir   string
-	DatabaseMaxConn int32
-	AuthRate        int
-	AuthBurst       int
-	TokenTTL        time.Duration
-	ShutdownTimeout time.Duration
+	Address            string
+	DatabaseURL        string
+	JWTSecret          string
+	AdminEmail         string
+	AdminPassword      string
+	MigrationsDir      string
+	DatabaseMaxConn    int32
+	AuthRate           int
+	AuthBurst          int
+	MetricsBearerToken string
+	TokenTTL           time.Duration
+	ShutdownTimeout    time.Duration
 }
 
 func Load() (Config, error) {
@@ -47,17 +48,18 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Address:         httpAddress(),
-		DatabaseURL:     os.Getenv("DATABASE_URL"),
-		JWTSecret:       os.Getenv("JWT_SECRET"),
-		AdminEmail:      os.Getenv("ADMIN_EMAIL"),
-		AdminPassword:   os.Getenv("ADMIN_PASSWORD"),
-		MigrationsDir:   stringFromEnvironment("MIGRATIONS_DIR", "migrations"),
-		DatabaseMaxConn: int32(maxConnections),
-		AuthRate:        authRate,
-		AuthBurst:       authBurst,
-		TokenTTL:        tokenTTL,
-		ShutdownTimeout: shutdownTimeout,
+		Address:            httpAddress(),
+		DatabaseURL:        os.Getenv("DATABASE_URL"),
+		JWTSecret:          os.Getenv("JWT_SECRET"),
+		AdminEmail:         os.Getenv("ADMIN_EMAIL"),
+		AdminPassword:      os.Getenv("ADMIN_PASSWORD"),
+		MigrationsDir:      stringFromEnvironment("MIGRATIONS_DIR", "migrations"),
+		DatabaseMaxConn:    int32(maxConnections),
+		AuthRate:           authRate,
+		AuthBurst:          authBurst,
+		MetricsBearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
+		TokenTTL:           tokenTTL,
+		ShutdownTimeout:    shutdownTimeout,
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -75,6 +77,9 @@ func Load() (Config, error) {
 	}
 	if cfg.AuthRate < 1 || cfg.AuthBurst < 1 {
 		return Config{}, errors.New("AUTH_RATE_PER_SECOND and AUTH_RATE_BURST must be positive")
+	}
+	if cfg.MetricsBearerToken != "" && len(cfg.MetricsBearerToken) < 32 {
+		return Config{}, errors.New("METRICS_BEARER_TOKEN must contain at least 32 characters")
 	}
 
 	return cfg, nil
