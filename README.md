@@ -32,6 +32,10 @@ curl -H "Authorization: Bearer $METRICS_BEARER_TOKEN" \
   https://api-production-45a5.up.railway.app/metrics
 ```
 
+## Logs and trace correlation
+
+The API writes structured JSON logs to standard output with `service`, `event`, `requestId`, `traceId`, and `spanId` fields. Every response includes `X-Request-ID`, `X-Trace-ID`, and a W3C `Traceparent` header. A valid incoming `X-Request-ID` and `Traceparent` trace ID are preserved, allowing one request to be followed across callers, API request logs, and reservation domain events.
+
 ## Reservation idempotency
 
 `POST /shows/{show_id}/reserve` scopes each idempotency key to the authenticated user.

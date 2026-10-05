@@ -101,11 +101,23 @@ func (api *API) createShow(writer http.ResponseWriter, request *http.Request) {
 		if writeContextError(writer, err) {
 			return
 		}
-		api.logger.Error("show creation failed", "error", err)
+		requestLogger(api.logger, request).Error(
+			"show creation failed",
+			"event", "show_creation_failed",
+			"error", err,
+		)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 		return
 	}
 
+	requestLogger(api.logger, request).Info(
+		"show created",
+		"event", "show_created",
+		"showId", created.ID,
+		"seatCount", len(created.Seats),
+		"pricePaise", created.PricePaise,
+		"perUserLimit", created.PerUserLimit,
+	)
 	writeJSON(writer, http.StatusCreated, created)
 }
 
@@ -125,7 +137,12 @@ func (api *API) getShow(writer http.ResponseWriter, request *http.Request) {
 			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "show_not_found"})
 			return
 		}
-		api.logger.Error("show lookup failed", "show_id", showID, "error", err)
+		requestLogger(api.logger, request).Error(
+			"show lookup failed",
+			"event", "show_lookup_failed",
+			"showId", showID,
+			"error", err,
+		)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 		return
 	}

@@ -66,12 +66,22 @@ func (api *API) register(writer http.ResponseWriter, request *http.Request) {
 		case errors.Is(err, user.ErrInvalidPassword):
 			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_password"})
 		default:
-			api.logger.Error("user registration failed", "error", err)
+			requestLogger(api.logger, request).Error(
+				"user registration failed",
+				"event", "user_registration_failed",
+				"error", err,
+			)
 			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 		}
 		return
 	}
 
+	requestLogger(api.logger, request).Info(
+		"user registered",
+		"event", "user_registered",
+		"userId", authentication.ID,
+		"role", authentication.Role,
+	)
 	writeJSON(writer, http.StatusCreated, authentication)
 }
 
@@ -90,11 +100,21 @@ func (api *API) login(writer http.ResponseWriter, request *http.Request) {
 			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "invalid_credentials"})
 			return
 		}
-		api.logger.Error("user login failed", "error", err)
+		requestLogger(api.logger, request).Error(
+			"user login failed",
+			"event", "user_login_failed",
+			"error", err,
+		)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 		return
 	}
 
+	requestLogger(api.logger, request).Info(
+		"user authenticated",
+		"event", "user_authenticated",
+		"userId", authentication.ID,
+		"role", authentication.Role,
+	)
 	writeJSON(writer, http.StatusOK, authentication)
 }
 
@@ -114,7 +134,12 @@ func (api *API) currentUser(writer http.ResponseWriter, request *http.Request) {
 			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
 			return
 		}
-		api.logger.Error("user lookup failed", "user_id", principal.UserID, "error", err)
+		requestLogger(api.logger, request).Error(
+			"user lookup failed",
+			"event", "user_lookup_failed",
+			"userId", principal.UserID,
+			"error", err,
+		)
 		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 		return
 	}
