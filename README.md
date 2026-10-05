@@ -24,9 +24,19 @@ export METRICS_BEARER_TOKEN='<metrics token, if configured>'
 ./burst.sh https://api-production-45a5.up.railway.app
 ```
 
-`METRICS_BEARER_TOKEN` is required when the target protects `/metrics`.
+`METRICS_BEARER_TOKEN` is required: the script reads `/metrics` before and after the run to reconcile the counters, and fails immediately if it cannot. `BURST_USERS` must be at least 27.
 
-The default run sends 20,000 mixed single-seat and multi-seat reservation requests with curl's parallel transfer engine. It also verifies idempotent replay and conflict behavior, reports confirmations and declines, checks duplicate ownership, all-or-nothing behavior, and the per-user limit, then reconciles API seat state with Prometheus gauges. Gauge comparison waits six seconds so any five-second collector cache entry has expired.
+The default run sends 20,000 mixed single-seat and multi-seat reservation requests with curl's parallel transfer engine and fails (`result=fail`, non-zero exit) if any check does not hold. It verifies:
+
+- **No double sale:** exactly one 201 per contested seat, no duplicate ownership, and every other request is a clean 409.
+- **Zero 5xx** and no client errors or timeouts.
+- **Invariant during and after the burst:** `available + held + confirmed = total` is sampled about every 200 ms while the burst runs, and again at the end.
+- **Multi-seat behaviour:** requests are all-or-nothing, overlapping requests run concurrently without deadlock, and a failed request leaves its other seat available.
+- **Idempotency:** a sequential retry returns the original reservation, the same key with different seats returns 409, 60 concurrent requests with one key create exactly one reservation, and 40 concurrent requests with one key and two different seats create exactly one.
+- **Per-user limit:** 10 parallel reservations against a limit of 4 confirm exactly 4.
+- **Identity:** missing and invalid tokens return 401, a spoofed `user_id` in the body is rejected with 400 and reserves nothing, the reservation belongs to the token's user, and another user cannot cancel it (404).
+- **Cancellation:** a cancel racing 24 competing reservations never releases or resurrects a seat confirmed to someone else, and the seat stays rebookable.
+- **Metrics:** the seat gauges match `GET /shows/{id}`, and the confirmed, seat-taken, per-user-limit, idempotency-conflict and idempotent-replay counters match what the script observed. This assumes no other client is using the service during the run.
 
 ## Metrics
 
