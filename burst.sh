@@ -229,6 +229,7 @@ curl_config="$temporary_directory/burst.curl"
 statuses="$temporary_directory/statuses"
 outcomes="$temporary_directory/outcomes"
 all_or_nothing_expected=0
+printf 'run_id=%s show_id=%s sample_request_id=burst-%s-0\n' "$run_id" "$show_id" "$run_id"
 {
 	printf 'parallel\n'
 	printf 'parallel-max = %d\n' "$concurrency"
@@ -287,6 +288,7 @@ for (( index = 0; index < requests; index++ )); do
 		printf 'request = "POST"\n'
 		printf 'header = "Authorization: Bearer %s"\n' "$token"
 		printf 'header = "Content-Type: application/json"\n'
+		printf 'header = "X-Request-ID: burst-%s-%d"\n' "$run_id" "$index"
 		printf 'data = "%s"\n' "$config_payload"
 		printf 'output = "%s/bodies/%d"\n' "$temporary_directory" "$index"
 		printf 'write-out = "%d %%{http_code} %s %s\\n"\n' "$index" "$seats" "$category"
