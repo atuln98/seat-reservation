@@ -102,7 +102,7 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 				"reason", reason,
 				"showId", showID,
 				"userId", principal.UserID,
-				"seats", body.Seats,
+				"seats", strings.Join(body.Seats, ","),
 				"seatCount", len(body.Seats),
 				"idempotencyKey", body.IdempotencyKey,
 			)
@@ -144,7 +144,7 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 			"reason", reason,
 			"showId", showID,
 			"userId", principal.UserID,
-			"seats", body.Seats,
+			"seats", strings.Join(body.Seats, ","),
 			"seatCount", len(body.Seats),
 			"idempotencyKey", body.IdempotencyKey,
 		)
@@ -170,7 +170,7 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 		"reservationId", result.Reservation.ID,
 		"showId", result.Reservation.ShowID,
 		"userId", result.Reservation.UserID,
-		"seats", result.Reservation.Seats,
+		"seats", strings.Join(result.Reservation.Seats, ","),
 		"seatCount", len(result.Reservation.Seats),
 		"amountPaise", result.Reservation.AmountPaise,
 		"idempotencyKey", body.IdempotencyKey,
@@ -257,7 +257,7 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 		"reservationId", cancelled.ID,
 		"showId", cancelled.ShowID,
 		"userId", cancelled.UserID,
-		"seats", cancelled.Seats,
+		"seats", strings.Join(cancelled.Seats, ","),
 		"seatCount", len(cancelled.Seats),
 	)
 	requestLogger(api.logger, request).Info(
