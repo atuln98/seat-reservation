@@ -1,5 +1,28 @@
 # Seat Reservation Service
 
+## Live deployment
+
+Base URL: `https://api-production-45a5.up.railway.app`
+
+Demo administrator credentials for this disposable deployment:
+
+```text
+Email: admin@seat-reservation.demo
+Password: DemoAdmin-2026!
+```
+
+These credentials are public and must not be reused outside this demonstration.
+
+## Burst test
+
+```bash
+ADMIN_EMAIL=admin@seat-reservation.demo \
+ADMIN_PASSWORD='DemoAdmin-2026!' \
+./burst.sh https://api-production-45a5.up.railway.app
+```
+
+The default run sends 20,000 mixed single-seat and multi-seat reservation requests with curl's parallel transfer engine. It reports confirmations, declines grouped by reason, server and client failures, duplicate ownership, all-or-nothing behavior, the per-user limit scenario, and final seat reconciliation.
+
 ## Reservation idempotency
 
 `POST /shows/{show_id}/reserve` scopes each idempotency key to the authenticated user.
