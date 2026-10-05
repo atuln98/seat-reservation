@@ -127,6 +127,22 @@ func (service *Service) BootstrapAdmin(ctx context.Context, email string, passwo
 		return err
 	}
 
+	var existingRole auth.Role
+	err = service.database.QueryRow(ctx, `
+		SELECT role::text
+		FROM users
+		WHERE lower(email) = $1
+	`, normalizedEmail).Scan(&existingRole)
+	if err == nil {
+		if existingRole != auth.RoleAdmin {
+			return errors.New("configured admin email belongs to a non-admin user")
+		}
+		return nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("select bootstrap admin: %w", err)
+	}
+
 	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
 		return fmt.Errorf("hash admin password: %w", err)
@@ -136,13 +152,22 @@ func (service *Service) BootstrapAdmin(ctx context.Context, email string, passwo
 		INSERT INTO users (email, password_hash, role)
 		VALUES ($1, $2, 'admin')
 		ON CONFLICT (lower(email))
-		DO UPDATE SET
-			password_hash = EXCLUDED.password_hash,
-			role = 'admin',
-			updated_at = now()
+		DO NOTHING
 	`, normalizedEmail, string(passwordHash))
 	if err != nil {
 		return fmt.Errorf("bootstrap admin: %w", err)
+	}
+
+	err = service.database.QueryRow(ctx, `
+		SELECT role::text
+		FROM users
+		WHERE lower(email) = $1
+	`, normalizedEmail).Scan(&existingRole)
+	if err != nil {
+		return fmt.Errorf("verify bootstrap admin: %w", err)
+	}
+	if existingRole != auth.RoleAdmin {
+		return errors.New("configured admin email belongs to a non-admin user")
 	}
 	return nil
 }
