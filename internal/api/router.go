@@ -52,6 +52,7 @@ func NewRouter(
 	applicationMetrics *metrics.Metrics,
 	authRate int,
 	authBurst int,
+	metricsBearerToken string,
 ) http.Handler {
 	api := &API{
 		database:     database,
@@ -68,7 +69,11 @@ func NewRouter(
 	router.HandleFunc("GET /{$}", api.root)
 	router.HandleFunc("GET /health/live", api.liveness)
 	router.HandleFunc("GET /health/ready", api.readiness)
-	router.Handle("GET /metrics", applicationMetrics.Handler())
+	metricsHandler := applicationMetrics.Handler()
+	if metricsBearerToken != "" {
+		metricsHandler = httpmiddleware.BearerToken(metricsBearerToken, metricsHandler)
+	}
+	router.Handle("GET /metrics", metricsHandler)
 	router.Handle("POST /auth/register", authLimiter.Middleware(http.HandlerFunc(api.register)))
 	router.Handle("POST /auth/login", authLimiter.Middleware(http.HandlerFunc(api.login)))
 	router.Handle("GET /users/me", tokens.Middleware(http.HandlerFunc(api.currentUser)))

@@ -72,6 +72,7 @@ func main() {
 			applicationMetrics,
 			cfg.AuthRate,
 			cfg.AuthBurst,
+			cfg.MetricsBearerToken,
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

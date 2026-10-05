@@ -25,10 +25,11 @@ The default run sends 20,000 mixed single-seat and multi-seat reservation reques
 
 ## Metrics
 
-Prometheus metrics are exposed publicly at `/metrics`. Reservation outcomes and HTTP request metrics are held in process memory. Per-show seat gauges are read from PostgreSQL and cached for five seconds, so available, held, confirmed, and total values reconcile with `GET /shows/{id}` without querying the database on every scrape.
+Prometheus metrics are exposed at `/metrics`. Set `METRICS_BEARER_TOKEN` to protect the endpoint for a hosted scraper. Reservation outcomes and HTTP request metrics are held in process memory. Per-show seat gauges are read from PostgreSQL and cached for five seconds, so available, held, confirmed, and total values reconcile with `GET /shows/{id}` without querying the database on every scrape.
 
 ```bash
-curl https://api-production-45a5.up.railway.app/metrics
+curl -H "Authorization: Bearer $METRICS_BEARER_TOKEN" \
+  https://api-production-45a5.up.railway.app/metrics
 ```
 
 ## Reservation idempotency
