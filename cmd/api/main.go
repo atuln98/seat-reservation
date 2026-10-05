@@ -65,6 +65,8 @@ func main() {
 		Environment:    cfg.LokiEnvironment,
 		RequestTimeout: cfg.OTLPRequestTimeout,
 		SampleRatio:    cfg.OTLPSampleRatio,
+		ExportWorkers:  cfg.OTLPExportWorkers,
+		QueueSpans:     cfg.OTLPQueueSpans,
 	})
 	if err != nil {
 		fatal(logger, broadcaster, "telemetry startup failed", "telemetry_startup_failed", err)

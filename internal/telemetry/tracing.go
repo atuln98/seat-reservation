@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/netip"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,6 +24,8 @@ type Config struct {
 	Environment    string
 	RequestTimeout time.Duration
 	SampleRatio    float64
+	ExportWorkers  int
+	QueueSpans     int
 }
 
 type Stats struct {
@@ -86,6 +89,58 @@ func (exporter countingExporter) Shutdown(ctx context.Context) error {
 	return exporter.inner.Shutdown(ctx)
 }
 
+type parallelExporter struct {
+	inner   sdktrace.SpanExporter
+	timeout time.Duration
+	batches chan []sdktrace.ReadOnlySpan
+	workers sync.WaitGroup
+}
+
+func newParallelExporter(inner sdktrace.SpanExporter, workers int, buffer int, timeout time.Duration) *parallelExporter {
+	exporter := &parallelExporter{
+		inner:   inner,
+		timeout: timeout,
+		batches: make(chan []sdktrace.ReadOnlySpan, buffer),
+	}
+	for range workers {
+		exporter.workers.Add(1)
+		go func() {
+			defer exporter.workers.Done()
+			for batch := range exporter.batches {
+				ctx, cancel := context.WithTimeout(context.Background(), exporter.timeout)
+				_ = exporter.inner.ExportSpans(ctx, batch)
+				cancel()
+			}
+		}()
+	}
+	return exporter
+}
+
+func (exporter *parallelExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	batch := append([]sdktrace.ReadOnlySpan(nil), spans...)
+	select {
+	case exporter.batches <- batch:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (exporter *parallelExporter) Shutdown(ctx context.Context) error {
+	close(exporter.batches)
+	done := make(chan struct{})
+	go func() {
+		exporter.workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return exporter.inner.Shutdown(ctx)
+}
+
 type routeSampler struct {
 	inner sdktrace.Sampler
 }
@@ -134,6 +189,9 @@ func New(ctx context.Context, cfg Config) (*sdktrace.TracerProvider, *Stats, err
 	if cfg.SampleRatio < 0 || cfg.SampleRatio > 1 {
 		return nil, nil, errors.New("OTLP_SAMPLE_RATIO must be between 0 and 1")
 	}
+	if cfg.ExportWorkers < 1 || cfg.QueueSpans < 1 {
+		return nil, nil, errors.New("OTLP_EXPORT_WORKERS and OTLP_QUEUE_SPANS must be positive")
+	}
 	parsed, err := url.Parse(cfg.Endpoint)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return nil, nil, errors.New("OTLP_ENDPOINT must be an absolute HTTP or HTTPS URL")
@@ -158,10 +216,15 @@ func New(ctx context.Context, cfg Config) (*sdktrace.TracerProvider, *Stats, err
 		options,
 		sdktrace.WithSampler(sdktrace.ParentBased(routeSampler{inner: sdktrace.TraceIDRatioBased(cfg.SampleRatio)})),
 		sdktrace.WithBatcher(
-			countingExporter{inner: exporter, stats: stats},
-			sdktrace.WithMaxQueueSize(65536),
+			newParallelExporter(
+				countingExporter{inner: exporter, stats: stats},
+				cfg.ExportWorkers,
+				cfg.ExportWorkers*4,
+				cfg.RequestTimeout,
+			),
+			sdktrace.WithMaxQueueSize(cfg.QueueSpans),
 			sdktrace.WithMaxExportBatchSize(1024),
-			sdktrace.WithBatchTimeout(time.Second),
+			sdktrace.WithBatchTimeout(500*time.Millisecond),
 			sdktrace.WithExportTimeout(cfg.RequestTimeout),
 		),
 	)

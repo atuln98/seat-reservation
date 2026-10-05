@@ -76,7 +76,7 @@ Each request trace is a complete tree: HTTP request, authentication, the service
 { resource.service.name="seat-reservation" && span.app.user_id="<user id>" }
 ```
 
-Set `OTLP_ENDPOINT`, `OTLP_USERNAME`, and `OTLP_PASSWORD` to export traces. Remote endpoints must use HTTPS. A reservation burst emits roughly twenty spans per request, so set `OTLP_SAMPLE_RATIO` below 1 for very large bursts. `seat_reservation_trace_spans_ended_total` minus `seat_reservation_trace_spans_exported_total` shows how many spans were queued or lost, and `seat_reservation_log_broadcast_queue_dropped_total` shows lost log lines.
+Set `OTLP_ENDPOINT`, `OTLP_USERNAME`, and `OTLP_PASSWORD` to export traces. Remote endpoints must use HTTPS. A reservation burst emits roughly twenty spans per request, so spans are exported by `OTLP_EXPORT_WORKERS` parallel workers (default 8) from a queue of `OTLP_QUEUE_SPANS` spans (default 131072). `OTLP_SAMPLE_RATIO` (default 1) keeps whole traces when lowered. `seat_reservation_trace_spans_ended_total` minus `seat_reservation_trace_spans_exported_total` shows spans still queued or lost, and `seat_reservation_log_broadcast_queue_dropped_total` shows lost log lines.
 
 ## Reservation idempotency
 

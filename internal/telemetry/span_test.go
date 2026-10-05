@@ -3,7 +3,9 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -65,4 +67,52 @@ func TestRouteSamplerDropsHealthAndMetrics(t *testing.T) {
 
 func urlPath(path string) attribute.KeyValue {
 	return attribute.String("url.path", path)
+}
+
+type slowExporter struct {
+	delay       time.Duration
+	exported    atomic.Int64
+	inFlight    atomic.Int64
+	maxInFlight atomic.Int64
+}
+
+func (exporter *slowExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
+	current := exporter.inFlight.Add(1)
+	for {
+		seen := exporter.maxInFlight.Load()
+		if current <= seen || exporter.maxInFlight.CompareAndSwap(seen, current) {
+			break
+		}
+	}
+	time.Sleep(exporter.delay)
+	exporter.exported.Add(int64(len(spans)))
+	exporter.inFlight.Add(-1)
+	return nil
+}
+
+func (exporter *slowExporter) Shutdown(context.Context) error {
+	return nil
+}
+
+func TestParallelExporterExportsConcurrentlyAndDrainsOnShutdown(t *testing.T) {
+	inner := &slowExporter{delay: 50 * time.Millisecond}
+	exporter := newParallelExporter(inner, 4, 16, time.Second)
+
+	spans := tracetest.SpanStubs{{Name: "a"}, {Name: "b"}, {Name: "c"}}.Snapshots()
+	const batches = 12
+	for range batches {
+		if err := exporter.ExportSpans(context.Background(), spans); err != nil {
+			t.Fatalf("ExportSpans() error = %v", err)
+		}
+	}
+	if err := exporter.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	if got := inner.exported.Load(); got != batches*3 {
+		t.Fatalf("exported spans = %d, want %d", got, batches*3)
+	}
+	if inner.maxInFlight.Load() < 2 {
+		t.Fatalf("exports never overlapped, max in flight = %d", inner.maxInFlight.Load())
+	}
 }

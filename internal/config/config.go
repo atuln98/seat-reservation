@@ -29,6 +29,8 @@ type Config struct {
 	OTLPUsername       string
 	OTLPPassword       string
 	OTLPSampleRatio    float64
+	OTLPExportWorkers  int
+	OTLPQueueSpans     int
 	TokenTTL           time.Duration
 	LokiFlushInterval  time.Duration
 	LokiRequestTimeout time.Duration
@@ -80,6 +82,14 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	otlpExportWorkers, err := intFromEnvironment("OTLP_EXPORT_WORKERS", 8)
+	if err != nil {
+		return Config{}, err
+	}
+	otlpQueueSpans, err := intFromEnvironment("OTLP_QUEUE_SPANS", 131072)
+	if err != nil {
+		return Config{}, err
+	}
 	otlpSampleRatio, err := floatFromEnvironment("OTLP_SAMPLE_RATIO", 1)
 	if err != nil {
 		return Config{}, err
@@ -110,6 +120,8 @@ func Load() (Config, error) {
 		OTLPUsername:       os.Getenv("OTLP_USERNAME"),
 		OTLPPassword:       os.Getenv("OTLP_PASSWORD"),
 		OTLPSampleRatio:    otlpSampleRatio,
+		OTLPExportWorkers:  otlpExportWorkers,
+		OTLPQueueSpans:     otlpQueueSpans,
 		TokenTTL:           tokenTTL,
 		LokiFlushInterval:  lokiFlushInterval,
 		LokiRequestTimeout: lokiRequestTimeout,
@@ -152,6 +164,12 @@ func Load() (Config, error) {
 	}
 	if cfg.OTLPSampleRatio < 0 || cfg.OTLPSampleRatio > 1 {
 		return Config{}, errors.New("OTLP_SAMPLE_RATIO must be between 0 and 1")
+	}
+	if cfg.OTLPExportWorkers < 1 || cfg.OTLPExportWorkers > 64 {
+		return Config{}, errors.New("OTLP_EXPORT_WORKERS must be between 1 and 64")
+	}
+	if cfg.OTLPQueueSpans < 1024 || cfg.OTLPQueueSpans > 1048576 {
+		return Config{}, errors.New("OTLP_QUEUE_SPANS must be between 1024 and 1048576")
 	}
 	if cfg.OTLPRequestTimeout <= 0 {
 		return Config{}, errors.New("OTLP_REQUEST_TIMEOUT must be positive")
