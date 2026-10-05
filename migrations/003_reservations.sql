@@ -1,8 +1,5 @@
 CREATE TYPE reservation_status AS ENUM ('confirmed', 'cancelled');
 
-ALTER TABLE seats
-DROP COLUMN IF EXISTS position;
-
 CREATE TABLE reservations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     show_id UUID NOT NULL REFERENCES shows(id),
