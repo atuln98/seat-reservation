@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"seat-reservation/internal/auth"
-	"seat-reservation/internal/httpmiddleware"
 	"seat-reservation/internal/reservation"
 )
 
@@ -105,11 +104,11 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 		case errors.Is(err, reservation.ErrAmountOutOfRange):
 			writeJSON(writer, http.StatusUnprocessableEntity, map[string]string{"error": "amount_out_of_range"})
 		default:
-			api.logger.Error(
+			requestLogger(api.logger, request).Error(
 				"seat reservation failed",
-				"request_id", httpmiddleware.RequestIDFromContext(request.Context()),
-				"show_id", showID,
-				"user_id", principal.UserID,
+				"event", "reservation_failed",
+				"showId", showID,
+				"userId", principal.UserID,
 				"error", err,
 			)
 			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
@@ -126,6 +125,21 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 	} else if api.metrics != nil {
 		api.metrics.Confirmed()
 	}
+	event := "reservation_confirmed"
+	message := "reservation confirmed"
+	if result.Replayed {
+		event = "reservation_replayed"
+		message = "reservation replayed"
+	}
+	requestLogger(api.logger, request).Info(
+		message,
+		"event", event,
+		"reservationId", result.Reservation.ID,
+		"showId", result.Reservation.ShowID,
+		"userId", result.Reservation.UserID,
+		"seatCount", len(result.Reservation.Seats),
+		"amountPaise", result.Reservation.AmountPaise,
+	)
 	writeJSON(writer, status, result.Reservation)
 }
 
@@ -153,11 +167,11 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 		case errors.Is(err, reservation.ErrInvalidState):
 			writeJSON(writer, http.StatusConflict, map[string]string{"error": "reservation_state_conflict"})
 		default:
-			api.logger.Error(
+			requestLogger(api.logger, request).Error(
 				"reservation cancellation failed",
-				"request_id", httpmiddleware.RequestIDFromContext(request.Context()),
-				"reservation_id", reservationID,
-				"user_id", principal.UserID,
+				"event", "reservation_cancellation_failed",
+				"reservationId", reservationID,
+				"userId", principal.UserID,
 				"error", err,
 			)
 			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
@@ -165,5 +179,13 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 
+	requestLogger(api.logger, request).Info(
+		"reservation cancelled",
+		"event", "reservation_cancelled",
+		"reservationId", cancelled.ID,
+		"showId", cancelled.ShowID,
+		"userId", cancelled.UserID,
+		"seatCount", len(cancelled.Seats),
+	)
 	writeJSON(writer, http.StatusOK, cancelled)
 }

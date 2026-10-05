@@ -86,6 +86,7 @@ func NewRouter(
 	handler = httpmiddleware.AccessLog(logger)(handler)
 	handler = httpmiddleware.Metrics(applicationMetrics)(handler)
 	handler = httpmiddleware.RequestID(handler)
+	handler = httpmiddleware.Trace(handler)
 
 	return handler
 }
@@ -106,9 +107,9 @@ func (api *API) readiness(writer http.ResponseWriter, request *http.Request) {
 	defer cancel()
 
 	if err := api.database.Ping(ctx); err != nil {
-		api.logger.Warn(
+		requestLogger(api.logger, request).Warn(
 			"readiness check failed",
-			"request_id", httpmiddleware.RequestIDFromContext(request.Context()),
+			"event", "readiness_check_failed",
 			"error", err,
 		)
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]string{
@@ -118,6 +119,15 @@ func (api *API) readiness(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	writeJSON(writer, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func requestLogger(logger *slog.Logger, request *http.Request) *slog.Logger {
+	traceContext := httpmiddleware.TraceFromContext(request.Context())
+	return logger.With(
+		"requestId", httpmiddleware.RequestIDFromContext(request.Context()),
+		"traceId", traceContext.TraceID,
+		"spanId", traceContext.SpanID,
+	)
 }
 
 func writeJSON(writer http.ResponseWriter, status int, payload any) {

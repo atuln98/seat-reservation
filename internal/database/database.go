@@ -36,7 +36,12 @@ func Open(ctx context.Context, databaseURL string, maxConnections int32, logger 
 			pool.Close()
 		}
 
-		logger.Warn("database connection attempt failed", "attempt", attempt, "error", err)
+		logger.Warn(
+			"database connection attempt failed",
+			"event", "database_connection_attempt_failed",
+			"attempt", attempt,
+			"error", err,
+		)
 
 		select {
 		case <-ctx.Done():
