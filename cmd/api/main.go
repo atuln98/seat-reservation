@@ -14,6 +14,7 @@ import (
 	"seat-reservation/internal/auth"
 	"seat-reservation/internal/config"
 	"seat-reservation/internal/database"
+	"seat-reservation/internal/reservation"
 	"seat-reservation/internal/show"
 	"seat-reservation/internal/user"
 )
@@ -55,10 +56,11 @@ func main() {
 		os.Exit(1)
 	}
 	showService := show.NewService(pool)
+	reservationService := reservation.NewService(pool)
 
 	server := &http.Server{
 		Addr:              cfg.Address,
-		Handler:           api.NewRouter(pool, logger, tokenManager, userService, showService),
+		Handler:           api.NewRouter(pool, logger, tokenManager, userService, showService, reservationService),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      90 * time.Second,

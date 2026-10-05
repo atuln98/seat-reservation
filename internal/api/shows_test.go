@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -38,6 +39,7 @@ func TestCreateShowRequestValidation(t *testing.T) {
 	overflow := maxPostgresInteger + 1
 	negativePrice := int64(-1)
 	validPrice := int64(25000)
+	maximumPrice := int64(math.MaxInt64)
 
 	tests := []struct {
 		name    string
@@ -88,6 +90,15 @@ func TestCreateShowRequestValidation(t *testing.T) {
 				PricePaise: &negativePrice,
 			},
 			want: validationErrors{"price_paise": "must be greater than or equal to zero"},
+		},
+		{
+			name: "reservation amount overflow",
+			request: createShowRequest{
+				Name:       "show",
+				Seats:      []string{"A1", "A2"},
+				PricePaise: &maximumPrice,
+			},
+			want: validationErrors{"price_paise": "is too large for the maximum reservation size"},
 		},
 		{
 			name: "invalid user limit",
@@ -160,7 +171,7 @@ func TestReadCreateShowUsesDefaultsAndNormalizes(t *testing.T) {
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/shows",
-		strings.NewReader(`{"name":" friday-night ","seats":[" A1 ","A2"],"price_paise":25000}`),
+		strings.NewReader(`{"name":" friday-night ","seats":[" A2 ","A1"],"price_paise":25000}`),
 	)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -206,7 +217,7 @@ func TestCreateShow(t *testing.T) {
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/shows",
-		strings.NewReader(`{"name":"friday-night","seats":["A1","A2"],"price_paise":25000}`),
+		strings.NewReader(`{"name":"friday-night","seats":["A2","A1"],"price_paise":25000}`),
 	)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()

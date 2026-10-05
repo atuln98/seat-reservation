@@ -9,6 +9,7 @@ import (
 
 	"seat-reservation/internal/auth"
 	"seat-reservation/internal/httpmiddleware"
+	"seat-reservation/internal/reservation"
 	"seat-reservation/internal/show"
 	"seat-reservation/internal/user"
 
@@ -16,10 +17,11 @@ import (
 )
 
 type API struct {
-	database *pgxpool.Pool
-	logger   *slog.Logger
-	users    userOperations
-	shows    showOperations
+	database     *pgxpool.Pool
+	logger       *slog.Logger
+	users        userOperations
+	shows        showOperations
+	reservations reservationOperations
 }
 
 type userOperations interface {
@@ -33,18 +35,25 @@ type showOperations interface {
 	Get(context.Context, string) (show.Show, error)
 }
 
+type reservationOperations interface {
+	Reserve(context.Context, reservation.ReserveInput) (reservation.ReserveResult, error)
+	Cancel(context.Context, string, string) (reservation.Reservation, error)
+}
+
 func NewRouter(
 	database *pgxpool.Pool,
 	logger *slog.Logger,
 	tokens *auth.TokenManager,
 	users *user.Service,
 	shows *show.Service,
+	reservations *reservation.Service,
 ) http.Handler {
 	api := &API{
-		database: database,
-		logger:   logger,
-		users:    users,
-		shows:    shows,
+		database:     database,
+		logger:       logger,
+		users:        users,
+		shows:        shows,
+		reservations: reservations,
 	}
 
 	router := http.NewServeMux()
@@ -57,6 +66,8 @@ func NewRouter(
 	router.Handle("GET /users/me", tokens.Middleware(http.HandlerFunc(api.currentUser)))
 	router.Handle("POST /shows", tokens.RequireRole(auth.RoleAdmin, http.HandlerFunc(api.createShow)))
 	router.HandleFunc("GET /shows/{id}", api.getShow)
+	router.Handle("POST /shows/{id}/reserve", tokens.Middleware(http.HandlerFunc(api.reserveSeats)))
+	router.Handle("POST /reservations/{id}/cancel", tokens.Middleware(http.HandlerFunc(api.cancelReservation)))
 
 	handler := httpmiddleware.Recover(logger)(router)
 	handler = httpmiddleware.AccessLog(logger)(handler)

@@ -12,10 +12,8 @@ CREATE TABLE shows (
 CREATE TABLE seats (
     show_id UUID NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
     seat_number TEXT NOT NULL CHECK (length(seat_number) BETWEEN 1 AND 32),
-    position INTEGER NOT NULL CHECK (position > 0),
     state seat_state NOT NULL DEFAULT 'available',
-    PRIMARY KEY (show_id, seat_number),
-    UNIQUE (show_id, position)
+    PRIMARY KEY (show_id, seat_number)
 );
 
 CREATE INDEX seats_show_state_idx

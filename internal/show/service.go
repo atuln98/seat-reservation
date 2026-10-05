@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,6 +59,9 @@ func NewService(database *pgxpool.Pool) *Service {
 }
 
 func (service *Service) Create(ctx context.Context, input CreateInput) (Show, error) {
+	seatNumbers := append([]string(nil), input.SeatNumbers...)
+	sort.Strings(seatNumbers)
+
 	tx, err := service.database.Begin(ctx)
 	if err != nil {
 		return Show{}, fmt.Errorf("begin show creation: %w", err)
@@ -82,10 +86,10 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (Show, er
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO seats (show_id, seat_number, position)
-		SELECT $1::uuid, input.seat_number, input.position::integer
-		FROM unnest($2::text[]) WITH ORDINALITY AS input(seat_number, position)
-	`, created.ID, input.SeatNumbers); err != nil {
+		INSERT INTO seats (show_id, seat_number)
+		SELECT $1::uuid, input.seat_number
+		FROM unnest($2::text[]) AS input(seat_number)
+	`, created.ID, seatNumbers); err != nil {
 		return Show{}, fmt.Errorf("insert show seats: %w", err)
 	}
 
@@ -93,8 +97,8 @@ func (service *Service) Create(ctx context.Context, input CreateInput) (Show, er
 		return Show{}, fmt.Errorf("commit show creation: %w", err)
 	}
 
-	created.Seats = make([]Seat, len(input.SeatNumbers))
-	for index, number := range input.SeatNumbers {
+	created.Seats = make([]Seat, len(seatNumbers))
+	for index, number := range seatNumbers {
 		created.Seats[index] = Seat{Number: number, State: SeatAvailable}
 	}
 	created.Counts = Counts{
@@ -127,7 +131,7 @@ func (service *Service) Get(ctx context.Context, showID string) (Show, error) {
 		SELECT seat_number, state::text
 		FROM seats
 		WHERE show_id = $1
-		ORDER BY position
+		ORDER BY seat_number
 	`, showID)
 	if err != nil {
 		return Show{}, fmt.Errorf("select show seats: %w", err)
