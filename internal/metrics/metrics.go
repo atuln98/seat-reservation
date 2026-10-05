@@ -200,7 +200,7 @@ func (collector *seatCollector) snapshot() []showSeatCounts {
 	collector.mutex.Lock()
 	defer collector.mutex.Unlock()
 
-	if len(collector.counts) != 0 && time.Since(collector.refreshedAt) < 5*time.Second {
+	if !collector.refreshedAt.IsZero() && time.Since(collector.refreshedAt) < 5*time.Second {
 		return append([]showSeatCounts(nil), collector.counts...)
 	}
 

@@ -18,16 +18,19 @@ These credentials are public and must not be reused outside this demonstration.
 ## Burst test
 
 ```bash
-ADMIN_EMAIL=admin@seat-reservation.demo \
-ADMIN_PASSWORD='DemoAdmin-2026!' \
+export ADMIN_EMAIL='admin@seat-reservation.demo'
+export ADMIN_PASSWORD='DemoAdmin-2026!'
+export METRICS_BEARER_TOKEN='<metrics token, if configured>'
 ./burst.sh https://api-production-45a5.up.railway.app
 ```
 
-The default run sends 20,000 mixed single-seat and multi-seat reservation requests with curl's parallel transfer engine. It reports confirmations, declines grouped by reason, server and client failures, duplicate ownership, all-or-nothing behavior, the per-user limit scenario, and final seat reconciliation.
+`METRICS_BEARER_TOKEN` is required when the target protects `/metrics`.
+
+The default run sends 20,000 mixed single-seat and multi-seat reservation requests with curl's parallel transfer engine. It also verifies idempotent replay and conflict behavior, reports confirmations and declines, checks duplicate ownership, all-or-nothing behavior, and the per-user limit, then reconciles API seat state with Prometheus gauges. Gauge comparison waits six seconds so any five-second collector cache entry has expired.
 
 ## Metrics
 
-Prometheus metrics are exposed at `/metrics`. Set `METRICS_BEARER_TOKEN` to protect the endpoint for a hosted scraper. Reservation outcomes and HTTP request metrics are held in process memory. Per-show seat gauges are read from PostgreSQL and cached for five seconds, so available, held, confirmed, and total values reconcile with `GET /shows/{id}` without querying the database on every scrape.
+Prometheus metrics are exposed at `/metrics`. Set `METRICS_BEARER_TOKEN` to protect the endpoint for a hosted scraper.
 
 Public Grafana dashboard: `https://robustturret3544.grafana.net/public-dashboards/fad3834ab4e9410381c30d957e45401a`
 
@@ -37,6 +40,12 @@ Grafana Cloud scrapes and stores the production metrics once per minute. The raw
 curl -H "Authorization: Bearer $METRICS_BEARER_TOKEN" \
   https://api-production-45a5.up.railway.app/metrics
 ```
+
+Reservation outcome and HTTP request counters are process-local and reset normally when an instance restarts. Prometheus retains previously scraped samples, so historical storage and restart-aware queries provide continuity rather than the application persisting counter values. With multiple instances, scrape every instance and aggregate their series.
+
+Per-show available, held, confirmed, and total seat gauges are read from PostgreSQL. Each service instance caches a successful collection for five seconds, so a scrape can trail `GET /shows/{id}` by up to five seconds. A collection failure serves the previous snapshot and increments `seat_reservation_metrics_collection_errors_total`.
+
+The per-show collector is intentionally useful for demonstration and reconciliation, but each refresh groups the full seats table and emits four series for every show. Query cost and `show_id` label cardinality therefore grow with retained shows, and every service instance maintains its own cache and runs its own refresh. A production deployment with unbounded show history should limit the collector to active shows or use recording/export pipelines appropriate to its retention and scale requirements.
 
 ## Logs and trace correlation
 

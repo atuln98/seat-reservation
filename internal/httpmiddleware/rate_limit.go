@@ -1,8 +1,9 @@
 package httpmiddleware
 
 import (
-	"net"
 	"net/http"
+	"net/netip"
+	"strings"
 	"sync"
 	"time"
 )
@@ -72,9 +73,25 @@ func (limiter *RateLimiter) allow(client string, now time.Time) bool {
 }
 
 func clientIP(request *http.Request) string {
-	host, _, err := net.SplitHostPort(request.RemoteAddr)
-	if err == nil {
-		return host
+	forwarded := request.Header.Values("X-Real-IP")
+	if len(forwarded) == 1 {
+		if address, ok := parseIP(strings.TrimSpace(forwarded[0])); ok {
+			return address
+		}
 	}
-	return request.RemoteAddr
+	if addressPort, err := netip.ParseAddrPort(request.RemoteAddr); err == nil {
+		return addressPort.Addr().Unmap().String()
+	}
+	if address, ok := parseIP(request.RemoteAddr); ok {
+		return address
+	}
+	return "unknown"
+}
+
+func parseIP(value string) (string, bool) {
+	address, err := netip.ParseAddr(value)
+	if err != nil || address.Zone() != "" {
+		return "", false
+	}
+	return address.Unmap().String(), true
 }

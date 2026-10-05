@@ -54,6 +54,27 @@ json_number() {
 	sed -nE "s/.*\"$key\":([0-9]+).*/\\1/p"
 }
 
+metric_number() {
+	local metric=$1
+	local show=$2
+	local source=$3
+	awk -v sample="$metric{show_id=\"$show\"}" '
+		$1 == sample {
+			count++
+			if ($2 !~ /^[0-9]+([.]0+)?$/) {
+				invalid = 1
+			}
+			value = $2
+		}
+		END {
+			if (count != 1 || invalid) {
+				exit 1
+			}
+			printf "%.0f\n", value
+		}
+	' "$source"
+}
+
 call_api() {
 	local expected_status=$1
 	local method=$2
@@ -120,7 +141,7 @@ for (( index = 0; index <= users; index++ )); do
 done
 
 show_payload=$(printf \
-	'{"name":"burst-%s","seats":["HOT","TAKEN","PROBE","A1","A2","A3","A4","A5","A6","A7","A8","A9","A10"],"price_paise":25000,"per_user_limit":13}' \
+	'{"name":"burst-%s","seats":["HOT","TAKEN","PROBE","IDEMP","IDEMP_ALT","CANCEL","A1","A2","A3","A4","A5","A6","A7","A8","A9","A10"],"price_paise":25000,"per_user_limit":16}' \
 	"$run_id")
 show_response=$(call_api 201 POST /shows "$admin_token" "$show_payload")
 show_id=$(json_string show_id <<<"$show_response")
@@ -133,6 +154,75 @@ taken_payload=$(printf \
 	'{"seats":["TAKEN"],"idempotency_key":"%s-taken"}' \
 	"$run_id")
 call_api 201 POST "/shows/$show_id/reserve" "${tokens[$users]}" "$taken_payload" >/dev/null
+
+idempotency_key="$run_id-idempotency"
+idempotency_payload=$(printf \
+	'{"seats":["IDEMP"],"idempotency_key":"%s"}' \
+	"$idempotency_key")
+idempotency_original=$(call_api 201 POST "/shows/$show_id/reserve" "${tokens[$users]}" "$idempotency_payload")
+idempotency_replay=$(call_api 200 POST "/shows/$show_id/reserve" "${tokens[$users]}" "$idempotency_payload")
+idempotency_original_id=$(json_string reservation_id <<<"$idempotency_original")
+idempotency_replay_id=$(json_string reservation_id <<<"$idempotency_replay")
+idempotency_conflict_payload=$(printf \
+	'{"seats":["IDEMP_ALT"],"idempotency_key":"%s"}' \
+	"$idempotency_key")
+idempotency_conflict=$(call_api 409 POST "/shows/$show_id/reserve" "${tokens[$users]}" "$idempotency_conflict_payload")
+idempotency_conflict_reason=$(json_string error <<<"$idempotency_conflict")
+idempotency_show=$(call_api 200 GET "/shows/$show_id" "" "")
+idempotency_confirmed=$(json_number confirmed <<<"$idempotency_show")
+idempotency_alt_available=false
+if [[ $idempotency_show == *'"seat_number":"IDEMP_ALT","state":"available"'* ]]; then
+	idempotency_alt_available=true
+fi
+printf 'idempotency original_id=%s replay_id=%s confirmed=%s conflict=%s alternate_seat_available=%s\n' \
+	"$idempotency_original_id" \
+	"$idempotency_replay_id" \
+	"$idempotency_confirmed" \
+	"$idempotency_conflict_reason" \
+	"$idempotency_alt_available"
+if [[ -z $idempotency_original_id ||
+	$idempotency_replay_id != "$idempotency_original_id" ||
+	$idempotency_replay != "$idempotency_original" ||
+	$idempotency_conflict_reason != idempotency_conflict ||
+	$idempotency_confirmed != 2 ||
+	$idempotency_alt_available != true ]]; then
+	printf 'result=fail\n' >&2
+	exit 1
+fi
+
+cancellation_key="$run_id-cancellation"
+cancellation_payload=$(printf \
+	'{"seats":["CANCEL"],"idempotency_key":"%s"}' \
+	"$cancellation_key")
+cancellation_original=$(call_api 201 POST "/shows/$show_id/reserve" "${tokens[$users]}" "$cancellation_payload")
+cancellation_original_id=$(json_string reservation_id <<<"$cancellation_original")
+cancellation_response=$(call_api 200 POST "/reservations/$cancellation_original_id/cancel" "${tokens[$users]}" "")
+cancellation_repeat=$(call_api 200 POST "/reservations/$cancellation_original_id/cancel" "${tokens[$users]}" "")
+cancellation_status=$(json_string status <<<"$cancellation_response")
+cancellation_repeat_status=$(json_string status <<<"$cancellation_repeat")
+cancellation_replay=$(call_api 200 POST "/shows/$show_id/reserve" "${tokens[$users]}" "$cancellation_payload")
+cancellation_replay_id=$(json_string reservation_id <<<"$cancellation_replay")
+cancellation_replay_status=$(json_string status <<<"$cancellation_replay")
+cancellation_new_payload=$(printf \
+	'{"seats":["CANCEL"],"idempotency_key":"%s-cancellation-new"}' \
+	"$run_id")
+cancellation_new=$(call_api 201 POST "/shows/$show_id/reserve" "${tokens[$users]}" "$cancellation_new_payload")
+cancellation_new_id=$(json_string reservation_id <<<"$cancellation_new")
+printf 'cancellation original_id=%s replay_id=%s replay_status=%s rebooked_id=%s\n' \
+	"$cancellation_original_id" \
+	"$cancellation_replay_id" \
+	"$cancellation_replay_status" \
+	"$cancellation_new_id"
+if [[ -z $cancellation_original_id ||
+	$cancellation_status != cancelled ||
+	$cancellation_repeat_status != cancelled ||
+	$cancellation_replay_id != "$cancellation_original_id" ||
+	$cancellation_replay_status != cancelled ||
+	-z $cancellation_new_id ||
+	$cancellation_new_id == "$cancellation_original_id" ]]; then
+	printf 'result=fail\n' >&2
+	exit 1
+fi
 
 mkdir "$temporary_directory/bodies"
 curl_config="$temporary_directory/burst.curl"
@@ -304,12 +394,22 @@ probe_available=false
 if [[ $final_response == *'"seat_number":"PROBE","state":"available"'* ]]; then
 	probe_available=true
 fi
+idempotency_alt_available=false
+if [[ $final_response == *'"seat_number":"IDEMP_ALT","state":"available"'* ]]; then
+	idempotency_alt_available=true
+fi
 reconciled=false
 if (( available + held + confirmed_seats == total )); then
 	reconciled=true
 fi
-printf 'final available=%d held=%d confirmed=%d total=%d reconciled=%s probe_available=%s\n' \
-	"$available" "$held" "$confirmed_seats" "$total" "$reconciled" "$probe_available"
+printf 'final available=%d held=%d confirmed=%d total=%d reconciled=%s probe_available=%s idempotency_alternate_available=%s\n' \
+	"$available" \
+	"$held" \
+	"$confirmed_seats" \
+	"$total" \
+	"$reconciled" \
+	"$probe_available" \
+	"$idempotency_alt_available"
 
 if (( confirmed != 4 ||
 	seat_declines != requests - 4 ||
@@ -320,10 +420,10 @@ if (( confirmed != 4 ||
 	held != 0 ||
 	duplicate_seats != 0 ||
 	reservation_ids != confirmed ||
-	confirmed_seats != successful_seats + 1 ||
+	confirmed_seats != successful_seats + 3 ||
 	available + confirmed_seats != total ||
-	total != 13 )) ||
-	[[ $probe_available != true ]]; then
+	total != 16 )) ||
+	[[ $probe_available != true || $idempotency_alt_available != true ]]; then
 	printf 'result=fail\n' >&2
 	exit 1
 fi
@@ -399,6 +499,57 @@ if (( limit_confirmed != 4 ||
 	limit_held != 0 ||
 	limit_confirmed_seats != 4 ||
 	limit_total != 10 )); then
+	printf 'result=fail\n' >&2
+	exit 1
+fi
+
+metrics_file="$temporary_directory/metrics"
+metrics_cache_seconds=5
+printf 'metrics waiting_seconds=%d reason=seat_gauge_cache\n' "$((metrics_cache_seconds + 1))"
+sleep "$((metrics_cache_seconds + 1))"
+call_api 200 GET /metrics "${METRICS_BEARER_TOKEN:-}" "" >"$metrics_file"
+
+if ! metrics_available=$(metric_number seat_reservation_seats_available "$show_id" "$metrics_file") ||
+	! metrics_held=$(metric_number seat_reservation_seats_held "$show_id" "$metrics_file") ||
+	! metrics_confirmed=$(metric_number seat_reservation_seats_confirmed "$show_id" "$metrics_file") ||
+	! metrics_total=$(metric_number seat_reservation_seats_total "$show_id" "$metrics_file") ||
+	! limit_metrics_available=$(metric_number seat_reservation_seats_available "$limit_show_id" "$metrics_file") ||
+	! limit_metrics_held=$(metric_number seat_reservation_seats_held "$limit_show_id" "$metrics_file") ||
+	! limit_metrics_confirmed=$(metric_number seat_reservation_seats_confirmed "$limit_show_id" "$metrics_file") ||
+	! limit_metrics_total=$(metric_number seat_reservation_seats_total "$limit_show_id" "$metrics_file"); then
+	printf 'metrics response did not contain one numeric sample per seat gauge and show\n' >&2
+	exit 1
+fi
+
+printf 'metrics show_id=%s available=%d held=%d confirmed=%d total=%d api_reconciled=%s\n' \
+	"$show_id" \
+	"$metrics_available" \
+	"$metrics_held" \
+	"$metrics_confirmed" \
+	"$metrics_total" \
+	"$([[ $metrics_available -eq $available &&
+		$metrics_held -eq $held &&
+		$metrics_confirmed -eq $confirmed_seats &&
+		$metrics_total -eq $total ]] && printf true || printf false)"
+printf 'metrics show_id=%s available=%d held=%d confirmed=%d total=%d api_reconciled=%s\n' \
+	"$limit_show_id" \
+	"$limit_metrics_available" \
+	"$limit_metrics_held" \
+	"$limit_metrics_confirmed" \
+	"$limit_metrics_total" \
+	"$([[ $limit_metrics_available -eq $limit_available &&
+		$limit_metrics_held -eq $limit_held &&
+		$limit_metrics_confirmed -eq $limit_confirmed_seats &&
+		$limit_metrics_total -eq $limit_total ]] && printf true || printf false)"
+
+if (( metrics_available != available ||
+	metrics_held != held ||
+	metrics_confirmed != confirmed_seats ||
+	metrics_total != total ||
+	limit_metrics_available != limit_available ||
+	limit_metrics_held != limit_held ||
+	limit_metrics_confirmed != limit_confirmed_seats ||
+	limit_metrics_total != limit_total )); then
 	printf 'result=fail\n' >&2
 	exit 1
 fi
