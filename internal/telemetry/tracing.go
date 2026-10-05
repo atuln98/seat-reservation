@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -108,7 +109,9 @@ func newParallelExporter(inner sdktrace.SpanExporter, workers int, buffer int, t
 			defer exporter.workers.Done()
 			for batch := range exporter.batches {
 				ctx, cancel := context.WithTimeout(context.Background(), exporter.timeout)
-				_ = exporter.inner.ExportSpans(ctx, batch)
+				if err := exporter.inner.ExportSpans(ctx, batch); err != nil {
+					otel.Handle(err)
+				}
 				cancel()
 			}
 		}()
@@ -207,6 +210,12 @@ func New(ctx context.Context, cfg Config) (*sdktrace.TracerProvider, *Stats, err
 		otlptracehttp.WithHeaders(map[string]string{"Authorization": "Basic " + authorization}),
 		otlptracehttp.WithCompression(otlptracehttp.GzipCompression),
 		otlptracehttp.WithTimeout(cfg.RequestTimeout),
+		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
+			Enabled:         true,
+			InitialInterval: 500 * time.Millisecond,
+			MaxInterval:     5 * time.Second,
+			MaxElapsedTime:  time.Minute,
+		}),
 	)
 	if err != nil {
 		return nil, nil, err
@@ -220,7 +229,7 @@ func New(ctx context.Context, cfg Config) (*sdktrace.TracerProvider, *Stats, err
 				countingExporter{inner: exporter, stats: stats},
 				cfg.ExportWorkers,
 				cfg.ExportWorkers*4,
-				cfg.RequestTimeout,
+				time.Minute,
 			),
 			sdktrace.WithMaxQueueSize(cfg.QueueSpans),
 			sdktrace.WithMaxExportBatchSize(1024),

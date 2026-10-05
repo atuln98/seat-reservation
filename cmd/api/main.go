@@ -71,6 +71,9 @@ func main() {
 	if err != nil {
 		fatal(logger, broadcaster, "telemetry startup failed", "telemetry_startup_failed", err)
 	}
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logger.Warn("telemetry export failed", "event", "telemetry_export_failed", "error", err)
+	}))
 	otel.SetTracerProvider(traceProvider)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 

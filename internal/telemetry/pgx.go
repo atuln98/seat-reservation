@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
@@ -27,8 +29,11 @@ func (PGXTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.Trac
 	if first, _, _ := strings.Cut(statement, " "); first != "" {
 		operation = strings.ToUpper(first)
 	}
-	if len(statement) > 400 {
-		statement = statement[:400]
+	if operation == "BEGIN" || operation == "ROLLBACK" {
+		return ctx
+	}
+	if len(statement) > 240 {
+		statement = statement[:240]
 	}
 	ctx, _ = Start(
 		ctx,
@@ -58,26 +63,50 @@ func (PGXTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQ
 	Finish(span, data.Err)
 }
 
+type acquireStartKey struct{}
+
+const slowAcquire = 2 * time.Millisecond
+
 func (PGXTracer) TraceAcquireStart(ctx context.Context, pool *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
 	if !oteltrace.SpanContextFromContext(ctx).IsValid() {
 		return ctx
 	}
 	stat := pool.Stat()
-	ctx, _ = Start(
-		ctx,
-		"db pool.acquire",
-		attribute.String("db.system.name", "postgresql"),
-		attribute.Int("db.pool.acquired", int(stat.AcquiredConns())),
-		attribute.Int("db.pool.idle", int(stat.IdleConns())),
-		attribute.Int("db.pool.max", int(stat.MaxConns())),
-	)
-	return ctx
+	return context.WithValue(ctx, acquireStartKey{}, acquireStart{
+		at:       time.Now(),
+		acquired: int(stat.AcquiredConns()),
+		idle:     int(stat.IdleConns()),
+		maximum:  int(stat.MaxConns()),
+	})
+}
+
+type acquireStart struct {
+	at       time.Time
+	acquired int
+	idle     int
+	maximum  int
 }
 
 func (PGXTracer) TraceAcquireEnd(ctx context.Context, _ *pgxpool.Pool, data pgxpool.TraceAcquireEndData) {
-	span := oteltrace.SpanFromContext(ctx)
-	if !span.IsRecording() {
+	started, ok := ctx.Value(acquireStartKey{}).(acquireStart)
+	if !ok {
 		return
 	}
+	waited := time.Since(started.at)
+	if waited < slowAcquire && data.Err == nil {
+		return
+	}
+	_, span := otel.Tracer(tracerName).Start(
+		ctx,
+		"db pool.acquire",
+		oteltrace.WithTimestamp(started.at),
+		oteltrace.WithAttributes(
+			attribute.String("db.system.name", "postgresql"),
+			attribute.Int("db.pool.acquired", started.acquired),
+			attribute.Int("db.pool.idle", started.idle),
+			attribute.Int("db.pool.max", started.maximum),
+			attribute.Int64("db.pool.wait_ms", waited.Milliseconds()),
+		),
+	)
 	Finish(span, data.Err)
 }
