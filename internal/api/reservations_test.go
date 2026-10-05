@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"seat-reservation/internal/auth"
+	appmetrics "seat-reservation/internal/metrics"
 	"seat-reservation/internal/reservation"
 )
 
@@ -177,7 +178,8 @@ func TestReserveSeatsResponses(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			api := &API{
-				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+				metrics: appmetrics.New(nil),
 				reservations: stubReservationOperations{
 					reserve: func(_ context.Context, input reservation.ReserveInput) (reservation.ReserveResult, error) {
 						if input.ShowID != showID || input.UserID != userID {
@@ -243,7 +245,8 @@ func TestCancelReservationResponses(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			api := &API{
-				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+				logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+				metrics: appmetrics.New(nil),
 				reservations: stubReservationOperations{
 					cancel: func(_ context.Context, gotReservationID string, gotUserID string) (reservation.Reservation, error) {
 						if gotReservationID != reservationID || gotUserID != userID {

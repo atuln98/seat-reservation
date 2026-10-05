@@ -11,12 +11,16 @@ const statusClientClosedRequest = 499
 func writeContextError(writer http.ResponseWriter, err error) bool {
 	switch {
 	case errors.Is(err, context.Canceled):
-		writeJSON(writer, statusClientClosedRequest, map[string]string{"error": "request_cancelled"})
+		writeError(writer, statusClientClosedRequest, "request_cancelled")
 		return true
 	case errors.Is(err, context.DeadlineExceeded):
-		writeJSON(writer, http.StatusRequestTimeout, map[string]string{"error": "request_timeout"})
+		writeError(writer, http.StatusRequestTimeout, "request_timeout")
 		return true
 	default:
 		return false
 	}
+}
+
+func writeError(writer http.ResponseWriter, status int, code string) {
+	writeJSON(writer, status, map[string]string{"error": code})
 }

@@ -20,6 +20,7 @@ type Config struct {
 	AuthBurst          int
 	MetricsBearerToken string
 	TokenTTL           time.Duration
+	RequestTimeout     time.Duration
 	ShutdownTimeout    time.Duration
 }
 
@@ -46,6 +47,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	requestTimeout, err := durationFromEnvironment("REQUEST_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		Address:            httpAddress(),
@@ -59,6 +64,7 @@ func Load() (Config, error) {
 		AuthBurst:          authBurst,
 		MetricsBearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
 		TokenTTL:           tokenTTL,
+		RequestTimeout:     requestTimeout,
 		ShutdownTimeout:    shutdownTimeout,
 	}
 
@@ -80,6 +86,9 @@ func Load() (Config, error) {
 	}
 	if cfg.MetricsBearerToken != "" && len(cfg.MetricsBearerToken) < 32 {
 		return Config{}, errors.New("METRICS_BEARER_TOKEN must contain at least 32 characters")
+	}
+	if cfg.RequestTimeout <= 0 {
+		return Config{}, errors.New("REQUEST_TIMEOUT must be positive")
 	}
 
 	return cfg, nil

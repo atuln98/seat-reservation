@@ -13,6 +13,8 @@ Password: DemoAdmin-2026!
 
 These credentials are public and must not be reused outside this demonstration.
 
+`ADMIN_EMAIL` and `ADMIN_PASSWORD` only create the bootstrap administrator when that email does not exist. Restarting with a different password does not reset the existing account or change its role.
+
 ## Burst test
 
 ```bash

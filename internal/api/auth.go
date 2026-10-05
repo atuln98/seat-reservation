@@ -28,9 +28,9 @@ func readCredentials(writer http.ResponseWriter, request *http.Request) (credent
 	var credentials credentialsRequest
 	if err := decodeJSON(writer, request, &credentials); err != nil {
 		if errors.Is(err, errUnsupportedMediaType) {
-			writeJSON(writer, http.StatusUnsupportedMediaType, map[string]string{"error": "content_type_must_be_application_json"})
+			writeError(writer, http.StatusUnsupportedMediaType, "content_type_must_be_application_json")
 		} else {
-			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
+			writeError(writer, http.StatusBadRequest, "invalid_request")
 		}
 		return credentialsRequest{}, false
 	}
@@ -60,18 +60,18 @@ func (api *API) register(writer http.ResponseWriter, request *http.Request) {
 		}
 		switch {
 		case errors.Is(err, user.ErrEmailExists):
-			writeJSON(writer, http.StatusConflict, map[string]string{"error": "email_already_registered"})
+			writeError(writer, http.StatusConflict, "email_already_registered")
 		case errors.Is(err, user.ErrInvalidEmail):
-			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_email"})
+			writeError(writer, http.StatusBadRequest, "invalid_email")
 		case errors.Is(err, user.ErrInvalidPassword):
-			writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_password"})
+			writeError(writer, http.StatusBadRequest, "invalid_password")
 		default:
 			requestLogger(api.logger, request).Error(
 				"user registration failed",
 				"event", "user_registration_failed",
 				"error", err,
 			)
-			writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+			writeError(writer, http.StatusInternalServerError, "internal_error")
 		}
 		return
 	}
@@ -97,7 +97,7 @@ func (api *API) login(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		if errors.Is(err, user.ErrInvalidCredentials) {
-			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "invalid_credentials"})
+			writeError(writer, http.StatusUnauthorized, "invalid_credentials")
 			return
 		}
 		requestLogger(api.logger, request).Error(
@@ -105,7 +105,7 @@ func (api *API) login(writer http.ResponseWriter, request *http.Request) {
 			"event", "user_login_failed",
 			"error", err,
 		)
-		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
 
@@ -121,7 +121,7 @@ func (api *API) login(writer http.ResponseWriter, request *http.Request) {
 func (api *API) currentUser(writer http.ResponseWriter, request *http.Request) {
 	principal, ok := auth.PrincipalFromContext(request.Context())
 	if !ok {
-		writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "authentication_required"})
+		writeError(writer, http.StatusUnauthorized, "authentication_required")
 		return
 	}
 
@@ -131,7 +131,7 @@ func (api *API) currentUser(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		if errors.Is(err, user.ErrNotFound) {
-			writeJSON(writer, http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
+			writeError(writer, http.StatusUnauthorized, "invalid_token")
 			return
 		}
 		requestLogger(api.logger, request).Error(
@@ -140,7 +140,7 @@ func (api *API) currentUser(writer http.ResponseWriter, request *http.Request) {
 			"userId", principal.UserID,
 			"error", err,
 		)
-		writeJSON(writer, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
 
