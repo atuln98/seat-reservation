@@ -9,6 +9,7 @@ import (
 
 	"seat-reservation/internal/auth"
 	"seat-reservation/internal/httpmiddleware"
+	"seat-reservation/internal/metrics"
 	"seat-reservation/internal/reservation"
 	"seat-reservation/internal/show"
 	"seat-reservation/internal/user"
@@ -22,6 +23,7 @@ type API struct {
 	users        userOperations
 	shows        showOperations
 	reservations reservationOperations
+	metrics      *metrics.Metrics
 }
 
 type userOperations interface {
@@ -47,6 +49,7 @@ func NewRouter(
 	users *user.Service,
 	shows *show.Service,
 	reservations *reservation.Service,
+	applicationMetrics *metrics.Metrics,
 	authRate int,
 	authBurst int,
 ) http.Handler {
@@ -56,6 +59,7 @@ func NewRouter(
 		users:        users,
 		shows:        shows,
 		reservations: reservations,
+		metrics:      applicationMetrics,
 	}
 
 	router := http.NewServeMux()
@@ -64,6 +68,7 @@ func NewRouter(
 	router.HandleFunc("GET /{$}", api.root)
 	router.HandleFunc("GET /health/live", api.liveness)
 	router.HandleFunc("GET /health/ready", api.readiness)
+	router.Handle("GET /metrics", applicationMetrics.Handler())
 	router.Handle("POST /auth/register", authLimiter.Middleware(http.HandlerFunc(api.register)))
 	router.Handle("POST /auth/login", authLimiter.Middleware(http.HandlerFunc(api.login)))
 	router.Handle("GET /users/me", tokens.Middleware(http.HandlerFunc(api.currentUser)))
@@ -74,6 +79,7 @@ func NewRouter(
 
 	handler := httpmiddleware.Recover(logger)(router)
 	handler = httpmiddleware.AccessLog(logger)(handler)
+	handler = httpmiddleware.Metrics(applicationMetrics)(handler)
 	handler = httpmiddleware.RequestID(handler)
 
 	return handler

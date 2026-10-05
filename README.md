@@ -23,6 +23,14 @@ ADMIN_PASSWORD='DemoAdmin-2026!' \
 
 The default run sends 20,000 mixed single-seat and multi-seat reservation requests with curl's parallel transfer engine. It reports confirmations, declines grouped by reason, server and client failures, duplicate ownership, all-or-nothing behavior, the per-user limit scenario, and final seat reconciliation.
 
+## Metrics
+
+Prometheus metrics are exposed publicly at `/metrics`. Reservation outcomes and HTTP request metrics are held in process memory. Per-show seat gauges are read from PostgreSQL and cached for five seconds, so available, held, confirmed, and total values reconcile with `GET /shows/{id}` without querying the database on every scrape.
+
+```bash
+curl https://api-production-45a5.up.railway.app/metrics
+```
+
 ## Reservation idempotency
 
 `POST /shows/{show_id}/reserve` scopes each idempotency key to the authenticated user.
