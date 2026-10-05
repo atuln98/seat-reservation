@@ -7,15 +7,20 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 type requestIDKey struct{}
-type traceContextKey struct{}
 
 type TraceContext struct {
 	TraceID string
@@ -97,18 +102,51 @@ func RequestID(next http.Handler) http.Handler {
 
 func Trace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		traceID := traceIDFromTraceparent(request.Header.Get("Traceparent"))
-		if traceID == "" {
-			traceID = randomHex(16)
+		ctx := propagation.TraceContext{}.Extract(request.Context(), propagation.HeaderCarrier(request.Header))
+		ctx, span := otel.Tracer("seat-reservation/http").Start(
+			ctx,
+			request.Method+" "+request.URL.Path,
+			oteltrace.WithSpanKind(oteltrace.SpanKindServer),
+			oteltrace.WithAttributes(
+				attribute.String("http.request.method", request.Method),
+				attribute.String("url.path", request.URL.Path),
+			),
+		)
+		spanContext := span.SpanContext()
+		if !spanContext.IsValid() {
+			traceID, _ := oteltrace.TraceIDFromHex(randomHex(16))
+			spanID, _ := oteltrace.SpanIDFromHex(randomHex(8))
+			spanContext = oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+				TraceID:    traceID,
+				SpanID:     spanID,
+				TraceFlags: oteltrace.FlagsSampled,
+			})
+			ctx = oteltrace.ContextWithSpanContext(ctx, spanContext)
 		}
-		traceContext := TraceContext{
-			TraceID: traceID,
-			SpanID:  randomHex(8),
+		writer.Header().Set("Traceparent", fmt.Sprintf(
+			"00-%s-%s-%02x",
+			spanContext.TraceID(),
+			spanContext.SpanID(),
+			byte(spanContext.TraceFlags()),
+		))
+		writer.Header().Set("X-Trace-ID", spanContext.TraceID().String())
+		wrapped := &responseWriter{ResponseWriter: writer}
+		tracedRequest := request.WithContext(ctx)
+		next.ServeHTTP(wrapped, tracedRequest)
+
+		status := wrapped.status
+		if status == 0 {
+			status = http.StatusOK
 		}
-		writer.Header().Set("Traceparent", "00-"+traceContext.TraceID+"-"+traceContext.SpanID+"-01")
-		writer.Header().Set("X-Trace-ID", traceContext.TraceID)
-		ctx := context.WithValue(request.Context(), traceContextKey{}, traceContext)
-		next.ServeHTTP(writer, request.WithContext(ctx))
+		span.SetAttributes(
+			attribute.String("http.route", tracedRequest.Pattern),
+			attribute.Int("http.response.status_code", status),
+			attribute.Int("http.response.body.size", wrapped.bytes),
+		)
+		if status >= http.StatusInternalServerError {
+			span.SetStatus(codes.Error, http.StatusText(status))
+		}
+		span.End()
 	})
 }
 
@@ -138,6 +176,8 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			startedAt := time.Now()
+			traceContext := TraceFromContext(request.Context())
+			requestID := RequestIDFromContext(request.Context())
 			wrapped := &responseWriter{ResponseWriter: writer}
 			next.ServeHTTP(wrapped, request)
 
@@ -148,9 +188,9 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			logger.Info(
 				"http request completed",
 				"event", "http_request_completed",
-				"requestId", RequestIDFromContext(request.Context()),
-				"traceId", TraceFromContext(request.Context()).TraceID,
-				"spanId", TraceFromContext(request.Context()).SpanID,
+				"requestId", requestID,
+				"traceId", traceContext.TraceID,
+				"spanId", traceContext.SpanID,
 				"method", request.Method,
 				"route", request.Pattern,
 				"path", request.URL.Path,
@@ -169,8 +209,11 @@ func RequestIDFromContext(ctx context.Context) string {
 }
 
 func TraceFromContext(ctx context.Context) TraceContext {
-	traceContext, _ := ctx.Value(traceContextKey{}).(TraceContext)
-	return traceContext
+	spanContext := oteltrace.SpanContextFromContext(ctx)
+	return TraceContext{
+		TraceID: spanContext.TraceID().String(),
+		SpanID:  spanContext.SpanID().String(),
+	}
 }
 
 func newRequestID() string {
@@ -193,29 +236,6 @@ func validRequestID(value string) bool {
 		return false
 	}
 	return true
-}
-
-func traceIDFromTraceparent(value string) string {
-	parts := strings.Split(value, "-")
-	if len(parts) != 4 ||
-		parts[0] != "00" ||
-		len(parts[1]) != 32 ||
-		len(parts[2]) != 16 ||
-		len(parts[3]) != 2 ||
-		allZero(parts[1]) ||
-		allZero(parts[2]) {
-		return ""
-	}
-	for _, part := range parts {
-		if _, err := hex.DecodeString(part); err != nil {
-			return ""
-		}
-	}
-	return strings.ToLower(parts[1])
-}
-
-func allZero(value string) bool {
-	return strings.Trim(value, "0") == ""
 }
 
 func randomHex(size int) string {

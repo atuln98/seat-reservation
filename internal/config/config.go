@@ -25,9 +25,13 @@ type Config struct {
 	LokiEnvironment    string
 	LokiQueueBytes     int
 	LokiBatchBytes     int
+	OTLPEndpoint       string
+	OTLPUsername       string
+	OTLPPassword       string
 	TokenTTL           time.Duration
 	LokiFlushInterval  time.Duration
 	LokiRequestTimeout time.Duration
+	OTLPRequestTimeout time.Duration
 	RequestTimeout     time.Duration
 	ShutdownTimeout    time.Duration
 }
@@ -75,6 +79,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	otlpRequestTimeout, err := durationFromEnvironment("OTLP_REQUEST_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
 
 	cfg := Config{
 		Address:            httpAddress(),
@@ -93,9 +101,13 @@ func Load() (Config, error) {
 		LokiEnvironment:    stringFromEnvironment("LOKI_ENVIRONMENT", stringFromEnvironment("RAILWAY_ENVIRONMENT_NAME", "production")),
 		LokiQueueBytes:     lokiQueueBytes,
 		LokiBatchBytes:     lokiBatchBytes,
+		OTLPEndpoint:       os.Getenv("OTLP_ENDPOINT"),
+		OTLPUsername:       os.Getenv("OTLP_USERNAME"),
+		OTLPPassword:       os.Getenv("OTLP_PASSWORD"),
 		TokenTTL:           tokenTTL,
 		LokiFlushInterval:  lokiFlushInterval,
 		LokiRequestTimeout: lokiRequestTimeout,
+		OTLPRequestTimeout: otlpRequestTimeout,
 		RequestTimeout:     requestTimeout,
 		ShutdownTimeout:    shutdownTimeout,
 	}
@@ -131,6 +143,9 @@ func Load() (Config, error) {
 	}
 	if cfg.LokiFlushInterval <= 0 || cfg.LokiRequestTimeout <= 0 {
 		return Config{}, errors.New("LOKI_FLUSH_INTERVAL and LOKI_REQUEST_TIMEOUT must be positive")
+	}
+	if cfg.OTLPRequestTimeout <= 0 {
+		return Config{}, errors.New("OTLP_REQUEST_TIMEOUT must be positive")
 	}
 	if cfg.RequestTimeout <= 0 {
 		return Config{}, errors.New("REQUEST_TIMEOUT must be positive")

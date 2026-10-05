@@ -87,8 +87,8 @@ func NewRouter(
 	handler := httpmiddleware.Recover(logger)(router)
 	handler = httpmiddleware.AccessLog(logger)(handler)
 	handler = httpmiddleware.Metrics(applicationMetrics)(handler)
-	handler = httpmiddleware.RequestID(handler)
 	handler = httpmiddleware.Trace(handler)
+	handler = httpmiddleware.RequestID(handler)
 	handler = httpmiddleware.RequestTimeout(requestTimeout, handler)
 
 	return handler

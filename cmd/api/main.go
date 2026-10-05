@@ -19,7 +19,11 @@ import (
 	"seat-reservation/internal/metrics"
 	"seat-reservation/internal/reservation"
 	"seat-reservation/internal/show"
+	"seat-reservation/internal/telemetry"
 	"seat-reservation/internal/user"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 func main() {
@@ -53,6 +57,19 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	traceProvider, err := telemetry.New(ctx, telemetry.Config{
+		Endpoint:       cfg.OTLPEndpoint,
+		Username:       cfg.OTLPUsername,
+		Password:       cfg.OTLPPassword,
+		Environment:    cfg.LokiEnvironment,
+		RequestTimeout: cfg.OTLPRequestTimeout,
+	})
+	if err != nil {
+		fatal(logger, broadcaster, "telemetry startup failed", "telemetry_startup_failed", err)
+	}
+	otel.SetTracerProvider(traceProvider)
+	otel.SetTextMapPropagator(propagation.TraceContext{})
 
 	pool, err := database.Open(ctx, cfg.DatabaseURL, cfg.DatabaseMaxConn, logger)
 	if err != nil {
@@ -119,6 +136,9 @@ func main() {
 
 	if err := server.Shutdown(shutdownContext); err != nil {
 		fatal(logger, broadcaster, "graceful shutdown failed", "graceful_shutdown_failed", err)
+	}
+	if err := traceProvider.Shutdown(shutdownContext); err != nil {
+		logger.Error("telemetry shutdown failed", "event", "telemetry_shutdown_failed", "error", err)
 	}
 
 	logger.Info("shutdown complete", "event", "shutdown_complete")
