@@ -13,6 +13,10 @@ import (
 
 type requestIDKey struct{}
 
+type RequestObserver interface {
+	ObserveRequest(string, string, int, time.Duration)
+}
+
 type responseWriter struct {
 	http.ResponseWriter
 	status int
@@ -31,6 +35,22 @@ func (writer *responseWriter) Write(body []byte) (int, error) {
 	count, err := writer.ResponseWriter.Write(body)
 	writer.bytes += count
 	return count, err
+}
+
+func Metrics(observer RequestObserver) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			startedAt := time.Now()
+			wrapped := &responseWriter{ResponseWriter: writer}
+			next.ServeHTTP(wrapped, request)
+
+			status := wrapped.status
+			if status == 0 {
+				status = http.StatusOK
+			}
+			observer.ObserveRequest(request.Method, request.Pattern, status, time.Since(startedAt))
+		})
+	}
 }
 
 func RequestID(next http.Handler) http.Handler {

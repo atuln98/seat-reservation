@@ -88,10 +88,19 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 		case errors.Is(err, reservation.ErrShowNotFound):
 			writeJSON(writer, http.StatusNotFound, map[string]string{"error": "show_not_found"})
 		case errors.Is(err, reservation.ErrSeatsUnavailable):
+			if api.metrics != nil {
+				api.metrics.Declined("seat_taken")
+			}
 			writeJSON(writer, http.StatusConflict, map[string]string{"error": "seats_unavailable"})
 		case errors.Is(err, reservation.ErrUserLimitExceeded):
+			if api.metrics != nil {
+				api.metrics.Declined("per_user_limit")
+			}
 			writeJSON(writer, http.StatusConflict, map[string]string{"error": "seat_limit_exceeded"})
 		case errors.Is(err, reservation.ErrIdempotencyConflict):
+			if api.metrics != nil {
+				api.metrics.Declined("idempotency_conflict")
+			}
 			writeJSON(writer, http.StatusConflict, map[string]string{"error": "idempotency_conflict"})
 		case errors.Is(err, reservation.ErrAmountOutOfRange):
 			writeJSON(writer, http.StatusUnprocessableEntity, map[string]string{"error": "amount_out_of_range"})
@@ -111,6 +120,11 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 	status := http.StatusCreated
 	if result.Replayed {
 		status = http.StatusOK
+		if api.metrics != nil {
+			api.metrics.Replayed()
+		}
+	} else if api.metrics != nil {
+		api.metrics.Confirmed()
 	}
 	writeJSON(writer, status, result.Reservation)
 }

@@ -14,6 +14,7 @@ import (
 	"seat-reservation/internal/auth"
 	"seat-reservation/internal/config"
 	"seat-reservation/internal/database"
+	"seat-reservation/internal/metrics"
 	"seat-reservation/internal/reservation"
 	"seat-reservation/internal/show"
 	"seat-reservation/internal/user"
@@ -57,6 +58,7 @@ func main() {
 	}
 	showService := show.NewService(pool)
 	reservationService := reservation.NewService(pool)
+	applicationMetrics := metrics.New(pool)
 
 	server := &http.Server{
 		Addr: cfg.Address,
@@ -67,6 +69,7 @@ func main() {
 			userService,
 			showService,
 			reservationService,
+			applicationMetrics,
 			cfg.AuthRate,
 			cfg.AuthBurst,
 		),
