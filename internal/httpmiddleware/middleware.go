@@ -11,7 +11,10 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
+
+	"seat-reservation/internal/telemetry"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -22,6 +25,11 @@ import (
 
 type requestIDKey struct{}
 type requestOutcomeKey struct{}
+type routeKey struct{}
+
+type routeHolder struct {
+	pattern string
+}
 
 type TraceContext struct {
 	TraceID string
@@ -30,6 +38,8 @@ type TraceContext struct {
 
 type requestOutcome struct {
 	name       string
+	generic    bool
+	err        string
 	attributes []any
 }
 
@@ -39,8 +49,9 @@ type RequestObserver interface {
 
 type responseWriter struct {
 	http.ResponseWriter
-	status int
-	bytes  int
+	status    int
+	bytes     int
+	errorCode string
 }
 
 func (writer *responseWriter) WriteHeader(status int) {
@@ -52,9 +63,43 @@ func (writer *responseWriter) Write(body []byte) (int, error) {
 	if writer.status == 0 {
 		writer.WriteHeader(http.StatusOK)
 	}
+	if writer.status >= http.StatusBadRequest && writer.errorCode == "" {
+		var payload struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(body, &payload) == nil {
+			writer.errorCode = payload.Error
+		}
+	}
 	count, err := writer.ResponseWriter.Write(body)
 	writer.bytes += count
 	return count, err
+}
+
+func CaptureRoute(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		defer func() {
+			if holder, ok := request.Context().Value(routeKey{}).(*routeHolder); ok {
+				holder.pattern = request.Pattern
+			}
+		}()
+		next.ServeHTTP(writer, request)
+	})
+}
+
+func RoutePattern(request *http.Request) string {
+	if holder, ok := request.Context().Value(routeKey{}).(*routeHolder); ok && holder.pattern != "" {
+		return holder.pattern
+	}
+	return request.Pattern
+}
+
+func quietRoute(pattern string) bool {
+	switch pattern {
+	case "GET /health/live", "GET /health/ready", "GET /metrics", "GET /{$}":
+		return true
+	}
+	return false
 }
 
 func Metrics(observer RequestObserver) func(http.Handler) http.Handler {
@@ -68,7 +113,7 @@ func Metrics(observer RequestObserver) func(http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
-			observer.ObserveRequest(request.Method, request.Pattern, status, time.Since(startedAt))
+			observer.ObserveRequest(request.Method, RoutePattern(request), status, time.Since(startedAt))
 		})
 	}
 }
@@ -108,7 +153,8 @@ func RequestID(next http.Handler) http.Handler {
 
 func Trace(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		ctx := propagation.TraceContext{}.Extract(request.Context(), propagation.HeaderCarrier(request.Header))
+		ctx := context.WithValue(request.Context(), routeKey{}, &routeHolder{})
+		ctx = propagation.TraceContext{}.Extract(ctx, propagation.HeaderCarrier(request.Header))
 		ctx, span := otel.Tracer("seat-reservation/http").Start(
 			ctx,
 			request.Method+" "+request.URL.Path,
@@ -145,19 +191,46 @@ func Trace(next http.Handler) http.Handler {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		if tracedRequest.Pattern != "" {
-			span.SetName(request.Method + " " + tracedRequest.Pattern)
+		route := RoutePattern(tracedRequest)
+		if route != "" {
+			span.SetName(route)
 		}
 		span.SetAttributes(
-			attribute.String("http.route", tracedRequest.Pattern),
+			attribute.String("http.route", route),
 			attribute.Int("http.response.status_code", status),
 			attribute.Int("http.response.body.size", wrapped.bytes),
 		)
-		if status >= http.StatusInternalServerError {
-			span.SetStatus(codes.Error, http.StatusText(status))
+		if wrapped.errorCode != "" {
+			span.SetAttributes(attribute.String("error.code", wrapped.errorCode))
+		}
+		switch {
+		case status >= http.StatusInternalServerError:
+			span.SetStatus(codes.Error, statusDescription(status, wrapped.errorCode))
+		case status == http.StatusRequestTimeout || status == statusClientClosedRequest:
+			span.SetAttributes(attribute.String("error.type", wrapped.errorCode))
+			span.SetStatus(codes.Error, statusDescription(status, wrapped.errorCode))
 		}
 		span.End()
 	})
+}
+
+const statusClientClosedRequest = 499
+
+func statusDescription(status int, errorCode string) string {
+	if errorCode != "" {
+		return errorCode
+	}
+	return http.StatusText(status)
+}
+
+func RecordRequestError(request *http.Request, err error) {
+	if err == nil {
+		return
+	}
+	if outcome, _ := request.Context().Value(requestOutcomeKey{}).(*requestOutcome); outcome != nil {
+		outcome.err = err.Error()
+	}
+	telemetry.RecordFailure(oteltrace.SpanFromContext(request.Context()), err)
 }
 
 func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
@@ -173,6 +246,10 @@ func Recover(logger *slog.Logger) func(http.Handler) http.Handler {
 						"spanId", TraceFromContext(request.Context()).SpanID,
 						"panic", recovered,
 						"stack", string(debug.Stack()),
+					)
+					telemetry.RecordFailure(
+						oteltrace.SpanFromContext(request.Context()),
+						fmt.Errorf("panic: %v", recovered),
 					)
 					writeError(writer, http.StatusInternalServerError, "internal_error")
 				}
@@ -197,13 +274,26 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 			if status == 0 {
 				status = http.StatusOK
 			}
+			if status >= http.StatusBadRequest && outcome.name == "" {
+				reason := wrapped.errorCode
+				if reason == "" {
+					reason = fmt.Sprintf("http_%d", status)
+				}
+				outcome.name = "request_failed"
+				outcome.generic = true
+				outcome.attributes = append(outcome.attributes, "reason", reason)
+			}
+			event := "http_request_completed"
+			if outcome.name != "" && !outcome.generic {
+				event = outcome.name
+			}
 			attributes := []any{
-				"event", "http_request_completed",
+				"event", event,
 				"requestId", requestID,
 				"traceId", traceContext.TraceID,
 				"spanId", traceContext.SpanID,
 				"method", request.Method,
-				"route", request.Pattern,
+				"route", RoutePattern(request),
 				"path", request.URL.Path,
 				"status", status,
 				"bytes", wrapped.bytes,
@@ -214,7 +304,30 @@ func AccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 				attributes = append(attributes, "outcome", outcome.name)
 				attributes = append(attributes, outcome.attributes...)
 			}
-			logger.Info("http request completed", attributes...)
+			if wrapped.errorCode != "" {
+				attributes = append(attributes, "errorCode", wrapped.errorCode)
+			}
+			if outcome.err != "" {
+				attributes = append(attributes, "error", outcome.err)
+			}
+			if status >= http.StatusBadRequest {
+				eventAttributes := []attribute.KeyValue{attribute.Int("http.response.status_code", status)}
+				if wrapped.errorCode != "" {
+					eventAttributes = append(eventAttributes, attribute.String("error.code", wrapped.errorCode))
+				}
+				oteltrace.SpanFromContext(request.Context()).AddEvent(
+					"http.response.error",
+					oteltrace.WithAttributes(eventAttributes...),
+				)
+			}
+			level := slog.LevelInfo
+			if status >= http.StatusInternalServerError {
+				level = slog.LevelError
+			}
+			if level == slog.LevelInfo && status < http.StatusBadRequest && quietRoute(RoutePattern(request)) {
+				return
+			}
+			logger.Log(request.Context(), level, "http request completed", attributes...)
 		})
 	}
 }
@@ -241,11 +354,35 @@ func RecordRequestOutcome(request *http.Request, name string, attributes ...any)
 			spanAttributes = append(spanAttributes, attribute.Int64(key, value))
 		case bool:
 			spanAttributes = append(spanAttributes, attribute.Bool(key, value))
+		case float64:
+			spanAttributes = append(spanAttributes, attribute.Float64(key, value))
 		case []string:
 			spanAttributes = append(spanAttributes, attribute.StringSlice(key, value))
+		default:
+			spanAttributes = append(spanAttributes, attribute.String(key, fmt.Sprint(value)))
 		}
 	}
-	oteltrace.SpanFromContext(request.Context()).AddEvent(name, oteltrace.WithAttributes(spanAttributes...))
+	span := oteltrace.SpanFromContext(request.Context())
+	span.AddEvent(name, oteltrace.WithAttributes(spanAttributes...))
+	span.SetAttributes(attribute.String("app.outcome", name))
+	for _, item := range spanAttributes {
+		span.SetAttributes(attribute.KeyValue{Key: attribute.Key("app." + snakeCase(string(item.Key))), Value: item.Value})
+	}
+}
+
+func snakeCase(value string) string {
+	var builder strings.Builder
+	for index, character := range value {
+		if character >= 'A' && character <= 'Z' {
+			if index > 0 {
+				builder.WriteByte('_')
+			}
+			builder.WriteRune(character + ('a' - 'A'))
+			continue
+		}
+		builder.WriteRune(character)
+	}
+	return builder.String()
 }
 
 func RequestIDFromContext(ctx context.Context) string {

@@ -53,6 +53,31 @@ The API writes structured JSON logs to standard output with `service`, `event`, 
 
 Set `LOKI_PUSH_URL`, `LOKI_USERNAME`, and `LOKI_PASSWORD` to broadcast the same JSON records to Grafana Cloud Loki in compressed batches. The asynchronous queue defaults to 16 MiB and is capped at 64 MiB, preventing a Loki outage from exhausting application memory. Queue overflow, delivery failures, queued bytes, and delivered records are exposed as Prometheus metrics.
 
+## Public observability
+
+Logs, metrics, and traces are all readable without a login on the public dashboard: `https://robustturret3544.grafana.net/public-dashboards/fad3834ab4e9410381c30d957e45401a`
+
+Every request produces one log line and one trace, joined by `traceId`. Health probes and `/metrics` scrapes are not logged or traced unless they fail.
+
+Loki stream labels are `service_name`, `environment`, `source`, and `level`. Everything else is a JSON field:
+
+```logql
+{service_name="seat-reservation"} | json | event="reservation_declined" | reason="seats_unavailable"
+{service_name="seat-reservation", level="error"}
+{service_name="seat-reservation"} | json | requestId="<id from X-Request-ID>"
+```
+
+Each request trace is a complete tree: HTTP request, authentication, the service operation, and each reservation step (`lock_user_show`, `check_idempotency`, `check_limit`, `lock_seats`, `insert_reservation`, `confirm_seats`, `commit`), with every database call and the connection-pool wait as child spans. Domain declines carry `app.outcome=declined` and `app.decline_reason` on the step that refused; unexpected failures set the span status to error with the recorded exception. Search in Tempo:
+
+```traceql
+{ resource.service.name="seat-reservation" && span.app.outcome="reservation_declined" }
+{ resource.service.name="seat-reservation" && span.app.reason="seat_limit_exceeded" }
+{ resource.service.name="seat-reservation" && status=error }
+{ resource.service.name="seat-reservation" && span.app.user_id="<user id>" }
+```
+
+Set `OTLP_ENDPOINT`, `OTLP_USERNAME`, and `OTLP_PASSWORD` to export traces. Remote endpoints must use HTTPS. A reservation burst emits roughly twenty spans per request, so set `OTLP_SAMPLE_RATIO` below 1 for very large bursts. `seat_reservation_trace_spans_ended_total` minus `seat_reservation_trace_spans_exported_total` shows how many spans were queued or lost, and `seat_reservation_log_broadcast_queue_dropped_total` shows lost log lines.
+
 ## Reservation idempotency
 
 `POST /shows/{show_id}/reserve` scopes each idempotency key to the authenticated user.

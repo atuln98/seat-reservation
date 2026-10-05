@@ -1,10 +1,13 @@
 package httpmiddleware
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -95,5 +98,104 @@ func TestTraceRecordsCompleteServerSpan(t *testing.T) {
 	}
 	if got := response.Header().Get("X-Trace-ID"); got != span.SpanContext().TraceID().String() {
 		t.Fatalf("response trace ID = %q, span trace ID = %q", got, span.SpanContext().TraceID())
+	}
+}
+
+type routeObserver struct {
+	routes []string
+}
+
+func (observer *routeObserver) ObserveRequest(_ string, route string, _ int, _ time.Duration) {
+	observer.routes = append(observer.routes, route)
+}
+
+func newObservedStack(logger *slog.Logger, observer RequestObserver, router http.Handler) http.Handler {
+	handler := Recover(logger)(CaptureRoute(router))
+	handler = AccessLog(logger)(handler)
+	handler = Metrics(observer)(handler)
+	handler = Trace(handler)
+	return RequestID(handler)
+}
+
+func TestRoutePatternSurvivesRequestCopies(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	defer otel.SetTracerProvider(previous)
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	observer := &routeObserver{}
+	router := http.NewServeMux()
+	router.HandleFunc("GET /shows/{id}", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+
+	newObservedStack(logger, observer, router).ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodGet, "/shows/abc", nil),
+	)
+
+	if len(observer.routes) != 1 || observer.routes[0] != "GET /shows/{id}" {
+		t.Fatalf("metrics routes = %q", observer.routes)
+	}
+	spans := recorder.Ended()
+	if len(spans) != 1 || spans[0].Name() != "GET /shows/{id}" {
+		t.Fatalf("spans = %v", spans)
+	}
+	if !strings.Contains(logs.String(), `"route":"GET /shows/{id}"`) {
+		t.Fatalf("access log route missing: %s", logs.String())
+	}
+}
+
+func TestAccessLogSkipsHealthyQuietRoutesAndEscalatesServerErrors(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	router := http.NewServeMux()
+	router.HandleFunc("GET /health/live", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+	})
+	router.HandleFunc("GET /health/ready", func(writer http.ResponseWriter, _ *http.Request) {
+		writeError(writer, http.StatusServiceUnavailable, "not_ready")
+	})
+	stack := newObservedStack(logger, &routeObserver{}, router)
+
+	stack.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health/live", nil))
+	if logs.Len() != 0 {
+		t.Fatalf("healthy liveness probe was logged: %s", logs.String())
+	}
+
+	stack.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	line := logs.String()
+	for _, want := range []string{`"level":"ERROR"`, `"status":503`, `"errorCode":"not_ready"`, `"reason":"not_ready"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("log line missing %s: %s", want, line)
+		}
+	}
+}
+
+func TestReservationOutcomeBecomesEvent(t *testing.T) {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	router := http.NewServeMux()
+	router.HandleFunc("POST /shows/{id}/reserve", func(writer http.ResponseWriter, request *http.Request) {
+		RecordRequestOutcome(request, "reservation_declined", "reason", "seats_unavailable", "seatCount", 2, "ratio", 0.5)
+		writeError(writer, http.StatusConflict, "seats_unavailable")
+	})
+
+	newObservedStack(logger, &routeObserver{}, router).ServeHTTP(
+		httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodPost, "/shows/abc/reserve", nil),
+	)
+
+	line := logs.String()
+	for _, want := range []string{`"event":"reservation_declined"`, `"outcome":"reservation_declined"`, `"reason":"seats_unavailable"`, `"level":"INFO"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("log line missing %s: %s", want, line)
+		}
+	}
+	if strings.Count(line, "\n") != 1 {
+		t.Fatalf("expected exactly one log line: %s", line)
 	}
 }

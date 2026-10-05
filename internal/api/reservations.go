@@ -136,6 +136,7 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 				"userId", principal.UserID,
 				"error", err,
 			)
+			httpmiddleware.RecordRequestError(request, err)
 			writeError(writer, http.StatusInternalServerError, "internal_error")
 		}
 		httpmiddleware.RecordRequestOutcome(
@@ -159,10 +160,8 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 		api.metrics.Confirmed()
 	}
 	event := "reservation_confirmed"
-	message := "reservation confirmed"
 	if result.Replayed {
 		event = "reservation_replayed"
-		message = "reservation replayed"
 	}
 	httpmiddleware.RecordRequestOutcome(
 		request,
@@ -174,15 +173,6 @@ func (api *API) reserveSeats(writer http.ResponseWriter, request *http.Request) 
 		"seatCount", len(result.Reservation.Seats),
 		"amountPaise", result.Reservation.AmountPaise,
 		"idempotencyKey", body.IdempotencyKey,
-	)
-	requestLogger(api.logger, request).Info(
-		message,
-		"event", event,
-		"reservationId", result.Reservation.ID,
-		"showId", result.Reservation.ShowID,
-		"userId", result.Reservation.UserID,
-		"seatCount", len(result.Reservation.Seats),
-		"amountPaise", result.Reservation.AmountPaise,
 	)
 	writeJSON(writer, status, result.Reservation)
 }
@@ -239,6 +229,7 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 				"userId", principal.UserID,
 				"error", err,
 			)
+			httpmiddleware.RecordRequestError(request, err)
 			writeError(writer, http.StatusInternalServerError, "internal_error")
 		}
 		httpmiddleware.RecordRequestOutcome(
@@ -258,14 +249,6 @@ func (api *API) cancelReservation(writer http.ResponseWriter, request *http.Requ
 		"showId", cancelled.ShowID,
 		"userId", cancelled.UserID,
 		"seats", strings.Join(cancelled.Seats, ","),
-		"seatCount", len(cancelled.Seats),
-	)
-	requestLogger(api.logger, request).Info(
-		"reservation cancelled",
-		"event", "reservation_cancelled",
-		"reservationId", cancelled.ID,
-		"showId", cancelled.ShowID,
-		"userId", cancelled.UserID,
 		"seatCount", len(cancelled.Seats),
 	)
 	writeJSON(writer, http.StatusOK, cancelled)

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"seat-reservation/internal/httpmiddleware"
 	"seat-reservation/internal/show"
 )
 
@@ -106,6 +107,7 @@ func (api *API) createShow(writer http.ResponseWriter, request *http.Request) {
 			"event", "show_creation_failed",
 			"error", err,
 		)
+		httpmiddleware.RecordRequestError(request, err)
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
@@ -143,6 +145,7 @@ func (api *API) getShow(writer http.ResponseWriter, request *http.Request) {
 			"showId", showID,
 			"error", err,
 		)
+		httpmiddleware.RecordRequestError(request, err)
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}

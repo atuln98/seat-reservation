@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"seat-reservation/internal/auth"
+	"seat-reservation/internal/httpmiddleware"
 	"seat-reservation/internal/user"
 )
 
@@ -71,6 +72,7 @@ func (api *API) register(writer http.ResponseWriter, request *http.Request) {
 				"event", "user_registration_failed",
 				"error", err,
 			)
+			httpmiddleware.RecordRequestError(request, err)
 			writeError(writer, http.StatusInternalServerError, "internal_error")
 		}
 		return
@@ -105,6 +107,7 @@ func (api *API) login(writer http.ResponseWriter, request *http.Request) {
 			"event", "user_login_failed",
 			"error", err,
 		)
+		httpmiddleware.RecordRequestError(request, err)
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}
@@ -140,6 +143,7 @@ func (api *API) currentUser(writer http.ResponseWriter, request *http.Request) {
 			"userId", principal.UserID,
 			"error", err,
 		)
+		httpmiddleware.RecordRequestError(request, err)
 		writeError(writer, http.StatusInternalServerError, "internal_error")
 		return
 	}

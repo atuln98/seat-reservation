@@ -84,7 +84,7 @@ func NewRouter(
 	router.Handle("POST /shows/{id}/reserve", tokens.Middleware(http.HandlerFunc(api.reserveSeats)))
 	router.Handle("POST /reservations/{id}/cancel", tokens.Middleware(http.HandlerFunc(api.cancelReservation)))
 
-	handler := httpmiddleware.Recover(logger)(router)
+	handler := httpmiddleware.Recover(logger)(httpmiddleware.CaptureRoute(router))
 	handler = httpmiddleware.AccessLog(logger)(handler)
 	handler = httpmiddleware.Metrics(applicationMetrics)(handler)
 	handler = httpmiddleware.Trace(handler)
@@ -110,6 +110,7 @@ func (api *API) readiness(writer http.ResponseWriter, request *http.Request) {
 	defer cancel()
 
 	if err := api.database.Ping(ctx); err != nil {
+		httpmiddleware.RecordRequestError(request, err)
 		requestLogger(api.logger, request).Warn(
 			"readiness check failed",
 			"event", "readiness_check_failed",
@@ -156,6 +157,7 @@ func (api *API) requireRole(role auth.Role, next http.Handler) http.Handler {
 				"userId", principal.UserID,
 				"error", err,
 			)
+			httpmiddleware.RecordRequestError(request, err)
 			writeError(writer, http.StatusInternalServerError, "internal_error")
 			return
 		}
