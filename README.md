@@ -55,28 +55,23 @@ Set `LOKI_PUSH_URL`, `LOKI_USERNAME`, and `LOKI_PASSWORD` to broadcast the same 
 
 ## Public observability
 
-Logs, metrics, and traces are all readable without a login on the public dashboard: `https://robustturret3544.grafana.net/public-dashboards/fad3834ab4e9410381c30d957e45401a`
+Logs, metrics, and request spans are all readable without a login on the public dashboard: `https://robustturret3544.grafana.net/public-dashboards/fad3834ab4e9410381c30d957e45401a`
 
-Every request produces one log line and one trace, joined by `traceId`. Health probes and `/metrics` scrapes are not logged or traced unless they fail.
+Every request produces one log line, and the inside of the request is written to Loki as span logs (`event="span"`): the HTTP request, authentication, each reservation step (`lock_user_show`, `check_idempotency`, `check_limit`, `lock_seats`, `insert_reservation`, `confirm_seats`, `commit`), the connection-pool wait when it is 2 ms or more, and every database call. Spans of one request share a `traceId`, are indented by depth, and are listed root first. Every confirmation, cancellation, 5xx and unexpected failure is logged; declines and other routine requests are sampled at 10 per second per reason. Health probes and `/metrics` scrapes are not logged unless they fail.
+
+Grafana Cloud's Tempo trace panels do not run for anonymous visitors (Tempo search streams over a login-only channel), so the public dashboard reads spans from these span logs. Full trace trees are still exported to Tempo for logged-in users.
 
 Loki stream labels are `service_name`, `environment`, `source`, and `level`. Everything else is a JSON field:
 
 ```logql
-{service_name="seat-reservation"} | json | event="reservation_declined" | reason="seats_unavailable"
+{service_name="seat-reservation"} | json | event="span" | traceId="<trace id>"
+{service_name="seat-reservation"} | json | event="span" | spanStatus="error"
+{service_name="seat-reservation"} | json | outcome="reservation_declined" | reason="seats_unavailable"
 {service_name="seat-reservation", level="error"}
 {service_name="seat-reservation"} | json | requestId="<id from X-Request-ID>"
 ```
 
-Each request trace is a complete tree: HTTP request, authentication, the service operation, and each reservation step (`lock_user_show`, `check_idempotency`, `check_limit`, `lock_seats`, `insert_reservation`, `confirm_seats`, `commit`), with every database call and the connection-pool wait as child spans. Domain declines carry `app.outcome=declined` and `app.decline_reason` on the step that refused; unexpected failures set the span status to error with the recorded exception. Search in Tempo:
-
-```traceql
-{ resource.service.name="seat-reservation" && span.app.outcome="reservation_declined" }
-{ resource.service.name="seat-reservation" && span.app.reason="seat_limit_exceeded" }
-{ resource.service.name="seat-reservation" && status=error }
-{ resource.service.name="seat-reservation" && span.app.user_id="<user id>" }
-```
-
-Set `OTLP_ENDPOINT`, `OTLP_USERNAME`, and `OTLP_PASSWORD` to export traces. Remote endpoints must use HTTPS. A reservation burst emits roughly twenty spans per request, so spans are exported by `OTLP_EXPORT_WORKERS` parallel workers (default 8) from a queue of `OTLP_QUEUE_SPANS` spans (default 131072). `OTLP_SAMPLE_RATIO` (default 1) keeps whole traces when lowered. `seat_reservation_trace_spans_ended_total` minus `seat_reservation_trace_spans_exported_total` shows spans still queued or lost, and `seat_reservation_log_broadcast_queue_dropped_total` shows lost log lines.
+Set `OTLP_ENDPOINT`, `OTLP_USERNAME`, and `OTLP_PASSWORD` to export traces to Tempo. Remote endpoints must use HTTPS. Spans are exported by `OTLP_EXPORT_WORKERS` parallel workers (default 8) from a queue of `OTLP_QUEUE_SPANS` spans (default 131072). `OTLP_SAMPLE_RATIO` (default 1) keeps whole traces when lowered and does not affect span logs. `seat_reservation_trace_spans_ended_total` minus `seat_reservation_trace_spans_exported_total` shows spans still queued or lost, and `seat_reservation_log_broadcast_queue_dropped_total` shows lost log lines.
 
 ## Reservation idempotency
 
