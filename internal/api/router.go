@@ -47,6 +47,8 @@ func NewRouter(
 	users *user.Service,
 	shows *show.Service,
 	reservations *reservation.Service,
+	authRate int,
+	authBurst int,
 ) http.Handler {
 	api := &API{
 		database:     database,
@@ -57,12 +59,13 @@ func NewRouter(
 	}
 
 	router := http.NewServeMux()
+	authLimiter := httpmiddleware.NewRateLimiter(authRate, authBurst)
 
 	router.HandleFunc("GET /{$}", api.root)
 	router.HandleFunc("GET /health/live", api.liveness)
 	router.HandleFunc("GET /health/ready", api.readiness)
-	router.HandleFunc("POST /auth/register", api.register)
-	router.HandleFunc("POST /auth/login", api.login)
+	router.Handle("POST /auth/register", authLimiter.Middleware(http.HandlerFunc(api.register)))
+	router.Handle("POST /auth/login", authLimiter.Middleware(http.HandlerFunc(api.login)))
 	router.Handle("GET /users/me", tokens.Middleware(http.HandlerFunc(api.currentUser)))
 	router.Handle("POST /shows", tokens.RequireRole(auth.RoleAdmin, http.HandlerFunc(api.createShow)))
 	router.HandleFunc("GET /shows/{id}", api.getShow)
