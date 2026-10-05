@@ -30,7 +30,7 @@ func (PGXTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.Trac
 		operation = strings.ToUpper(first)
 	}
 	if operation == "BEGIN" || operation == "ROLLBACK" {
-		return ctx
+		return context.WithValue(ctx, untracedQueryKey{}, true)
 	}
 	if len(statement) > 240 {
 		statement = statement[:240]
@@ -45,7 +45,12 @@ func (PGXTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.Trac
 	return ctx
 }
 
+type untracedQueryKey struct{}
+
 func (PGXTracer) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
+	if untraced, _ := ctx.Value(untracedQueryKey{}).(bool); untraced {
+		return
+	}
 	span := oteltrace.SpanFromContext(ctx)
 	if !span.IsRecording() {
 		return

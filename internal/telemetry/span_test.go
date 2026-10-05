@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -115,4 +117,31 @@ func TestParallelExporterExportsConcurrentlyAndDrainsOnShutdown(t *testing.T) {
 	if inner.maxInFlight.Load() < 2 {
 		t.Fatalf("exports never overlapped, max in flight = %d", inner.maxInFlight.Load())
 	}
+}
+
+func TestSkippedQueriesDoNotEndTheParentSpan(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	previous := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	defer otel.SetTracerProvider(previous)
+	ctx, parent := provider.Tracer("test").Start(context.Background(), "parent")
+	tracer := NewPGXTracer()
+
+	queryContext := tracer.TraceQueryStart(ctx, nil, pgx.TraceQueryStartData{SQL: "begin"})
+	tracer.TraceQueryEnd(queryContext, nil, pgx.TraceQueryEndData{})
+	if !parent.IsRecording() {
+		t.Fatal("a skipped BEGIN ended the parent span")
+	}
+
+	queryContext = tracer.TraceQueryStart(ctx, nil, pgx.TraceQueryStartData{SQL: "SELECT 1"})
+	tracer.TraceQueryEnd(queryContext, nil, pgx.TraceQueryEndData{})
+	if !parent.IsRecording() {
+		t.Fatal("a traced query ended the parent span")
+	}
+	ended := recorder.Ended()
+	if len(ended) != 1 || ended[0].Name() != "db SELECT" {
+		t.Fatalf("ended spans = %v", ended)
+	}
+	parent.End()
 }
