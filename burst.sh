@@ -777,15 +777,10 @@ race_seat_declined=$(count_error "$race_reserve_directory" seats_unavailable)
 race_final_cancel=$(call_api 200 POST "/reservations/$race_owner_id/cancel" "${tokens[2]}" "")
 race_cancel_final_status=$(json_string status <<<"$race_final_cancel")
 race_state=$(seat_state "$(call_api 200 GET "/shows/$phase_show_id" "" "")" RACE)
-race_followup_status=
-if (( race_winners == 0 )); then
+race_followup_status=none
+if (( race_winners == 1 )); then
 	race_followup_status=$(request_status POST "/shows/$phase_show_id/reserve" "${tokens[3]}" \
 		"$(printf '{"seats":["RACE"],"idempotency_key":"%s-race-followup"}' "$run_id")" /dev/null)
-	race_expected_followup=201
-else
-	race_followup_status=$(request_status POST "/shows/$phase_show_id/reserve" "${tokens[3]}" \
-		"$(printf '{"seats":["RACE"],"idempotency_key":"%s-race-followup"}' "$run_id")" /dev/null)
-	race_expected_followup=409
 fi
 race_end=$(call_api 200 GET "/shows/$phase_show_id" "" "")
 race_end_state=$(seat_state "$race_end" RACE)
@@ -797,26 +792,79 @@ printf 'cancel_vs_reserve_race cancels_ok=%d/5 winners=%d declined=%d other=%d s
 	"$race_cancel_ok" "$race_winners" "$race_declined" "$race_other" "$race_state" \
 	"$race_cancel_final_status" "$race_followup_status" "$race_end_state"
 race_expected_state=available
+race_expected_followup=none
 if (( race_winners == 1 )); then
 	race_expected_state=confirmed
+	race_expected_followup=409
 fi
 if (( race_cancel_ok != 5 || race_winners > 1 || race_other != 0 || race_declined != race_seat_declined )) ||
-	[[ $race_cancel_final_status != cancelled || $race_followup_status != "$race_expected_followup" || $race_end_state != confirmed || $race_state != "$race_expected_state" ]]; then
+	[[ $race_cancel_final_status != cancelled || $race_followup_status != "$race_expected_followup" || $race_end_state != "$race_expected_state" || $race_state != "$race_expected_state" ]]; then
 	fail_burst "cancel racing a competing reservation"
 fi
 expected_confirmed=$((expected_confirmed + race_winners))
 expected_seat_taken=$((expected_seat_taken + race_declined))
-if [[ $race_followup_status == 201 ]]; then
-	expected_confirmed=$((expected_confirmed + 1))
-else
+if [[ $race_followup_status == 409 ]]; then
 	expected_seat_taken=$((expected_seat_taken + 1))
 fi
 printf 'phase_show final available=%s held=%s confirmed=%s total=%s reconciled=%s\n' \
 	"$phase_available" "$phase_held" "$phase_confirmed" "$phase_total" \
 	"$([[ $((phase_available + phase_held + phase_confirmed)) -eq $phase_total ]] && printf true || printf false)"
-if (( phase_held != 0 || phase_confirmed != 3 || phase_total != 5 || phase_available + phase_confirmed != phase_total )); then
+if (( phase_held != 0 || phase_confirmed != 2 + race_winners || phase_total != 5 || phase_available + phase_confirmed != phase_total )); then
 	fail_burst "phase show reconciliation"
 fi
+
+cycle_show_payload=$(printf \
+	'{"name":"burst-%s-cycle","seats":["C1","C2","C3","C4","C5","C6","C7","C8"],"price_paise":25000,"per_user_limit":4}' \
+	"$run_id")
+cycle_show_response=$(call_api 201 POST /shows "$admin_token" "$cycle_show_payload")
+cycle_show_id=$(json_string show_id <<<"$cycle_show_response")
+cycle_user=${tokens[5]}
+cycle_reserve() {
+	local expected=$1
+	local key=$2
+	local seats=$3
+	local output=$4
+	local token=${5:-$cycle_user}
+	local status
+	status=$(request_status POST "/shows/$cycle_show_id/reserve" "$token" \
+		"$(printf '{"seats":[%s],"idempotency_key":"%s-cycle-%s"}' "$seats" "$run_id" "$key")" "$output")
+	if [[ $status != "$expected" ]]; then
+		fail_burst "limit cycle step $key expected $expected got $status"
+	fi
+}
+cycle_first="$temporary_directory/cycle-first"
+cycle_replay="$temporary_directory/cycle-replay"
+cycle_reserve 201 first '"C1","C2"' "$cycle_first"
+cycle_first_id=$(json_string reservation_id <<<"$(cat "$cycle_first")")
+cycle_reserve 201 second '"C3","C4"' /dev/null
+cycle_reserve 409 over-limit-full '"C5"' /dev/null
+cycle_cancel_status=$(request_status POST "/reservations/$cycle_first_id/cancel" "$cycle_user" "" /dev/null)
+cycle_reserve 201 after-cancel '"C5","C6"' /dev/null
+cycle_reserve 409 over-limit-again '"C7"' /dev/null
+cycle_replay_status=$(request_status POST "/shows/$cycle_show_id/reserve" "$cycle_user" \
+	"$(printf '{"seats":["C1","C2"],"idempotency_key":"%s-cycle-first"}' "$run_id")" "$cycle_replay")
+cycle_replay_body=$(cat "$cycle_replay")
+cycle_replay_state=$(json_string status <<<"$cycle_replay_body")
+cycle_replay_id=$(json_string reservation_id <<<"$cycle_replay_body")
+cycle_repeat_cancel=$(request_status POST "/reservations/$cycle_first_id/cancel" "$cycle_user" "" /dev/null)
+cycle_reserve 201 other-user-takes-freed '"C1"' /dev/null "${tokens[6]}"
+cycle_end=$(call_api 200 GET "/shows/$cycle_show_id" "" "")
+cycle_available=$(json_number available <<<"$cycle_end")
+cycle_confirmed=$(json_number confirmed <<<"$cycle_end")
+cycle_total=$(json_number total_seats <<<"$cycle_end")
+printf 'limit_cycle book_2+2 over_limit=409 cancel=%s rebook_2=201 over_limit_again=409 replay_of_cancelled=%s/%s same_reservation=%s repeat_cancel=%s freed_seat_rebooked_by_other=201 final available=%s confirmed=%s total=%s\n' \
+	"$cycle_cancel_status" "$cycle_replay_status" "$cycle_replay_state" \
+	"$([[ $cycle_replay_id == "$cycle_first_id" ]] && printf true || printf false)" \
+	"$cycle_repeat_cancel" "$cycle_available" "$cycle_confirmed" "$cycle_total"
+if [[ $cycle_cancel_status != 200 || $cycle_replay_status != 200 || $cycle_replay_state != cancelled ||
+	$cycle_replay_id != "$cycle_first_id" || $cycle_repeat_cancel != 200 ]] ||
+	[[ $(seat_state "$cycle_end" C2) != available || $(seat_state "$cycle_end" C1) != confirmed ]] ||
+	(( cycle_confirmed != 5 || cycle_available != 3 || cycle_total != 8 )); then
+	fail_burst "booking, cancelling part of the limit, and booking again"
+fi
+expected_confirmed=$((expected_confirmed + 4))
+expected_limit=$((expected_limit + 2))
+expected_replay=$((expected_replay + 1))
 
 metrics_file="$temporary_directory/metrics"
 metrics_cache_seconds=5

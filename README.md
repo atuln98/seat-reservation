@@ -35,7 +35,8 @@ The default run sends 20,000 mixed single-seat and multi-seat reservation reques
 - **Idempotency:** a sequential retry returns the original reservation, the same key with different seats returns 409, 60 concurrent requests with one key create exactly one reservation, and 40 concurrent requests with one key and two different seats create exactly one.
 - **Per-user limit:** 10 parallel reservations against a limit of 4 confirm exactly 4.
 - **Identity:** missing and invalid tokens return 401, a spoofed `user_id` in the body is rejected with 400 and reserves nothing, the reservation belongs to the token's user, and another user cannot cancel it (404).
-- **Cancellation:** a cancel racing 24 competing reservations never releases or resurrects a seat confirmed to someone else, and the seat stays rebookable.
+- **Cancellation:** a cancel racing 24 competing reservations never releases or resurrects a seat confirmed to someone else. Cancelling twice is harmless (cancel is idempotent by state), and replaying the key of a cancelled reservation returns it with `status: cancelled` instead of booking again.
+- **Limit after cancel:** a user at the limit of 4 is declined, cancels one 2-seat reservation, can book 2 seats again, and is then declined again; the freed seats can be booked by someone else.
 - **Metrics:** the seat gauges match `GET /shows/{id}`, and the confirmed, seat-taken, per-user-limit, idempotency-conflict and idempotent-replay counters match what the script observed. This assumes no other client is using the service during the run.
 
 ## Metrics
