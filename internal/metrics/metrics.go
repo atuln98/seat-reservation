@@ -23,6 +23,16 @@ type Metrics struct {
 	collectionErrors      prometheus.Counter
 }
 
+type LogBroadcastStats interface {
+	EnqueuedTotal() uint64
+	DeliveredTotal() uint64
+	QueueDroppedTotal() uint64
+	DeliveryDroppedTotal() uint64
+	DeliveryErrorsTotal() uint64
+	QueueBytes() uint64
+	QueueEntries() uint64
+}
+
 type showSeatCounts struct {
 	showID    string
 	available int64
@@ -105,6 +115,60 @@ func (metrics *Metrics) Handler() http.Handler {
 		MaxRequestsInFlight: 2,
 		Timeout:             3 * time.Second,
 	})
+}
+
+func (metrics *Metrics) RegisterLogBroadcast(stats LogBroadcastStats) {
+	metrics.registry.MustRegister(
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "log_broadcast_enqueued_total",
+			Help:      "Log records accepted by the external broadcast queue.",
+		}, func() float64 {
+			return float64(stats.EnqueuedTotal())
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "log_broadcast_delivered_total",
+			Help:      "Log records delivered to the external destination.",
+		}, func() float64 {
+			return float64(stats.DeliveredTotal())
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "log_broadcast_queue_dropped_total",
+			Help:      "Log records dropped because the bounded queue was full.",
+		}, func() float64 {
+			return float64(stats.QueueDroppedTotal())
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "log_broadcast_delivery_dropped_total",
+			Help:      "Log records dropped after external delivery failed.",
+		}, func() float64 {
+			return float64(stats.DeliveryDroppedTotal())
+		}),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{
+			Namespace: "seat_reservation",
+			Name:      "log_broadcast_delivery_errors_total",
+			Help:      "Batches that failed external delivery after retries.",
+		}, func() float64 {
+			return float64(stats.DeliveryErrorsTotal())
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "seat_reservation",
+			Name:      "log_broadcast_queue_bytes",
+			Help:      "Estimated bytes retained by the external log queue.",
+		}, func() float64 {
+			return float64(stats.QueueBytes())
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Namespace: "seat_reservation",
+			Name:      "log_broadcast_queue_entries",
+			Help:      "Log records currently waiting for external delivery.",
+		}, func() float64 {
+			return float64(stats.QueueEntries())
+		}),
+	)
 }
 
 func (metrics *Metrics) Confirmed() {

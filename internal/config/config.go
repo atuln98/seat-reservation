@@ -19,7 +19,15 @@ type Config struct {
 	AuthRate           int
 	AuthBurst          int
 	MetricsBearerToken string
+	LokiPushURL        string
+	LokiUsername       string
+	LokiPassword       string
+	LokiEnvironment    string
+	LokiQueueBytes     int
+	LokiBatchBytes     int
 	TokenTTL           time.Duration
+	LokiFlushInterval  time.Duration
+	LokiRequestTimeout time.Duration
 	RequestTimeout     time.Duration
 	ShutdownTimeout    time.Duration
 }
@@ -37,6 +45,14 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	lokiQueueBytes, err := intFromEnvironment("LOKI_QUEUE_BYTES", 16*1024*1024)
+	if err != nil {
+		return Config{}, err
+	}
+	lokiBatchBytes, err := intFromEnvironment("LOKI_BATCH_BYTES", 512*1024)
+	if err != nil {
+		return Config{}, err
+	}
 
 	shutdownTimeout, err := durationFromEnvironment("SHUTDOWN_TIMEOUT", 10*time.Second)
 	if err != nil {
@@ -48,6 +64,14 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	requestTimeout, err := durationFromEnvironment("REQUEST_TIMEOUT", 10*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	lokiFlushInterval, err := durationFromEnvironment("LOKI_FLUSH_INTERVAL", 250*time.Millisecond)
+	if err != nil {
+		return Config{}, err
+	}
+	lokiRequestTimeout, err := durationFromEnvironment("LOKI_REQUEST_TIMEOUT", 5*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
@@ -63,7 +87,15 @@ func Load() (Config, error) {
 		AuthRate:           authRate,
 		AuthBurst:          authBurst,
 		MetricsBearerToken: os.Getenv("METRICS_BEARER_TOKEN"),
+		LokiPushURL:        os.Getenv("LOKI_PUSH_URL"),
+		LokiUsername:       os.Getenv("LOKI_USERNAME"),
+		LokiPassword:       os.Getenv("LOKI_PASSWORD"),
+		LokiEnvironment:    stringFromEnvironment("LOKI_ENVIRONMENT", stringFromEnvironment("RAILWAY_ENVIRONMENT_NAME", "production")),
+		LokiQueueBytes:     lokiQueueBytes,
+		LokiBatchBytes:     lokiBatchBytes,
 		TokenTTL:           tokenTTL,
+		LokiFlushInterval:  lokiFlushInterval,
+		LokiRequestTimeout: lokiRequestTimeout,
 		RequestTimeout:     requestTimeout,
 		ShutdownTimeout:    shutdownTimeout,
 	}
@@ -86,6 +118,19 @@ func Load() (Config, error) {
 	}
 	if cfg.MetricsBearerToken != "" && len(cfg.MetricsBearerToken) < 32 {
 		return Config{}, errors.New("METRICS_BEARER_TOKEN must contain at least 32 characters")
+	}
+	lokiConfigured := cfg.LokiPushURL != "" || cfg.LokiUsername != "" || cfg.LokiPassword != ""
+	if lokiConfigured && (cfg.LokiPushURL == "" || cfg.LokiUsername == "" || cfg.LokiPassword == "") {
+		return Config{}, errors.New("LOKI_PUSH_URL, LOKI_USERNAME, and LOKI_PASSWORD must be configured together")
+	}
+	if cfg.LokiQueueBytes < 1 || cfg.LokiQueueBytes > 64*1024*1024 {
+		return Config{}, errors.New("LOKI_QUEUE_BYTES must be between 1 and 67108864")
+	}
+	if cfg.LokiBatchBytes < 1 || cfg.LokiBatchBytes > cfg.LokiQueueBytes {
+		return Config{}, errors.New("LOKI_BATCH_BYTES must be positive and no greater than LOKI_QUEUE_BYTES")
+	}
+	if cfg.LokiFlushInterval <= 0 || cfg.LokiRequestTimeout <= 0 {
+		return Config{}, errors.New("LOKI_FLUSH_INTERVAL and LOKI_REQUEST_TIMEOUT must be positive")
 	}
 	if cfg.RequestTimeout <= 0 {
 		return Config{}, errors.New("REQUEST_TIMEOUT must be positive")

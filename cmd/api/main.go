@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"seat-reservation/internal/auth"
 	"seat-reservation/internal/config"
 	"seat-reservation/internal/database"
+	"seat-reservation/internal/logbroadcast"
 	"seat-reservation/internal/metrics"
 	"seat-reservation/internal/reservation"
 	"seat-reservation/internal/show"
@@ -21,55 +23,60 @@ import (
 )
 
 func main() {
-	logHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		ReplaceAttr: func(_ []string, attribute slog.Attr) slog.Attr {
-			switch attribute.Key {
-			case slog.TimeKey:
-				attribute.Key = "timestamp"
-			case slog.MessageKey:
-				attribute.Key = "message"
-			}
-			return attribute
-		},
-	})
-	logger := slog.New(logHandler).With("service", "seat-reservation")
-	slog.SetDefault(logger)
-
+	startupLogger := newLogger(os.Stdout)
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Error("configuration failed", "event", "configuration_failed", "error", err)
+		startupLogger.Error("configuration failed", "event", "configuration_failed", "error", err)
 		os.Exit(1)
 	}
+
+	broadcaster, err := logbroadcast.New(logbroadcast.Config{
+		URL:            cfg.LokiPushURL,
+		Username:       cfg.LokiUsername,
+		Password:       cfg.LokiPassword,
+		Environment:    cfg.LokiEnvironment,
+		QueueBytes:     cfg.LokiQueueBytes,
+		BatchBytes:     cfg.LokiBatchBytes,
+		FlushInterval:  cfg.LokiFlushInterval,
+		RequestTimeout: cfg.LokiRequestTimeout,
+	})
+	if err != nil {
+		startupLogger.Error("log broadcaster startup failed", "event", "log_broadcaster_startup_failed", "error", err)
+		os.Exit(1)
+	}
+	logOutput := io.Writer(os.Stdout)
+	if broadcaster.Enabled() {
+		logOutput = io.MultiWriter(broadcaster, os.Stdout)
+	}
+	logger := newLogger(logOutput)
+	slog.SetDefault(logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	pool, err := database.Open(ctx, cfg.DatabaseURL, cfg.DatabaseMaxConn, logger)
 	if err != nil {
-		logger.Error("database startup failed", "event", "database_startup_failed", "error", err)
-		os.Exit(1)
+		fatal(logger, broadcaster, "database startup failed", "database_startup_failed", err)
 	}
 	defer pool.Close()
 
 	if err := database.Migrate(ctx, pool, cfg.MigrationsDir); err != nil {
-		logger.Error("database migration failed", "event", "database_migration_failed", "error", err)
-		os.Exit(1)
+		fatal(logger, broadcaster, "database migration failed", "database_migration_failed", err)
 	}
 
 	tokenManager, err := auth.NewTokenManager(cfg.JWTSecret, "seat-reservation", cfg.TokenTTL)
 	if err != nil {
-		logger.Error("token manager startup failed", "event", "token_manager_startup_failed", "error", err)
-		os.Exit(1)
+		fatal(logger, broadcaster, "token manager startup failed", "token_manager_startup_failed", err)
 	}
 
 	userService := user.NewService(pool, tokenManager)
 	if err := userService.BootstrapAdmin(ctx, cfg.AdminEmail, cfg.AdminPassword); err != nil {
-		logger.Error("admin bootstrap failed", "event", "admin_bootstrap_failed", "error", err)
-		os.Exit(1)
+		fatal(logger, broadcaster, "admin bootstrap failed", "admin_bootstrap_failed", err)
 	}
 	showService := show.NewService(pool)
 	reservationService := reservation.NewService(pool)
 	applicationMetrics := metrics.New(pool)
+	applicationMetrics.RegisterLogBroadcast(broadcaster)
 
 	server := &http.Server{
 		Addr: cfg.Address,
@@ -103,8 +110,7 @@ func main() {
 		logger.Info("shutdown requested", "event", "shutdown_requested")
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("http server failed", "event", "http_server_failed", "error", err)
-			os.Exit(1)
+			fatal(logger, broadcaster, "http server failed", "http_server_failed", err)
 		}
 	}
 
@@ -112,9 +118,36 @@ func main() {
 	defer cancel()
 
 	if err := server.Shutdown(shutdownContext); err != nil {
-		logger.Error("graceful shutdown failed", "event", "graceful_shutdown_failed", "error", err)
-		os.Exit(1)
+		fatal(logger, broadcaster, "graceful shutdown failed", "graceful_shutdown_failed", err)
 	}
 
 	logger.Info("shutdown complete", "event", "shutdown_complete")
+	broadcastContext, broadcastCancel := context.WithTimeout(context.Background(), cfg.LokiRequestTimeout+time.Second)
+	defer broadcastCancel()
+	if err := broadcaster.Close(broadcastContext); err != nil {
+		startupLogger.Error("log broadcaster shutdown failed", "event", "log_broadcaster_shutdown_failed", "error", err)
+	}
+}
+
+func newLogger(output io.Writer) *slog.Logger {
+	handler := slog.NewJSONHandler(output, &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, attribute slog.Attr) slog.Attr {
+			switch attribute.Key {
+			case slog.TimeKey:
+				attribute.Key = "timestamp"
+			case slog.MessageKey:
+				attribute.Key = "message"
+			}
+			return attribute
+		},
+	})
+	return slog.New(handler).With("service", "seat-reservation")
+}
+
+func fatal(logger *slog.Logger, broadcaster *logbroadcast.Broadcaster, message string, event string, err error) {
+	logger.Error(message, "event", event, "error", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	_ = broadcaster.Close(ctx)
+	os.Exit(1)
 }

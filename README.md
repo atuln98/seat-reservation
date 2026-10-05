@@ -51,6 +51,8 @@ The per-show collector is intentionally useful for demonstration and reconciliat
 
 The API writes structured JSON logs to standard output with `service`, `event`, `requestId`, `traceId`, and `spanId` fields. Every response includes `X-Request-ID`, `X-Trace-ID`, and a W3C `Traceparent` header. A valid incoming `X-Request-ID` and `Traceparent` trace ID are preserved, allowing one request to be followed across callers, API request logs, and reservation domain events.
 
+Set `LOKI_PUSH_URL`, `LOKI_USERNAME`, and `LOKI_PASSWORD` to broadcast the same JSON records to Grafana Cloud Loki in compressed batches. The asynchronous queue defaults to 16 MiB and is capped at 64 MiB, preventing a Loki outage from exhausting application memory. Queue overflow, delivery failures, queued bytes, and delivered records are exposed as Prometheus metrics.
+
 ## Reservation idempotency
 
 `POST /shows/{show_id}/reserve` scopes each idempotency key to the authenticated user.
