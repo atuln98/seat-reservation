@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -57,6 +58,7 @@ type Broadcaster struct {
 type entry struct {
 	timestamp int64
 	line      string
+	level     string
 	size      int
 }
 
@@ -102,6 +104,9 @@ func New(cfg Config) (*Broadcaster, error) {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return nil, errors.New("LOKI_PUSH_URL must be an absolute HTTP or HTTPS URL")
 	}
+	if parsed.Scheme != "https" && !loopbackHost(parsed.Hostname()) {
+		return nil, errors.New("LOKI_PUSH_URL must use HTTPS unless it targets a loopback host")
+	}
 	if cfg.Username == "" || cfg.Password == "" {
 		return nil, errors.New("LOKI_USERNAME and LOKI_PASSWORD are required when LOKI_PUSH_URL is set")
 	}
@@ -140,6 +145,7 @@ func (broadcaster *Broadcaster) Write(data []byte) (int, error) {
 	broadcaster.queue = append(broadcaster.queue, entry{
 		timestamp: time.Now().UnixNano(),
 		line:      line,
+		level:     levelOf(line),
 		size:      size,
 	})
 	broadcaster.queueBytes += size
@@ -275,20 +281,25 @@ func (broadcaster *Broadcaster) takeBatch() []entry {
 }
 
 func (broadcaster *Broadcaster) deliver(ctx context.Context, batch []entry) error {
-	values := make([][2]string, len(batch))
-	for index, item := range batch {
-		values[index] = [2]string{fmt.Sprintf("%d", item.timestamp), item.line}
+	streams := make([]pushStream, 0, 4)
+	positions := make(map[string]int, 4)
+	for _, item := range batch {
+		position, exists := positions[item.level]
+		if !exists {
+			position = len(streams)
+			positions[item.level] = position
+			streams = append(streams, pushStream{
+				Stream: map[string]string{
+					"environment":  broadcaster.environment,
+					"service_name": "seat-reservation",
+					"source":       "application",
+					"level":        item.level,
+				},
+			})
+		}
+		streams[position].Values = append(streams[position].Values, [2]string{fmt.Sprintf("%d", item.timestamp), item.line})
 	}
-	payload := pushPayload{
-		Streams: []pushStream{{
-			Stream: map[string]string{
-				"environment":  broadcaster.environment,
-				"service_name": "seat-reservation",
-				"source":       "application",
-			},
-			Values: values,
-		}},
-	}
+	payload := pushPayload{Streams: streams}
 
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -348,4 +359,26 @@ func (broadcaster *Broadcaster) deliver(ctx context.Context, batch []entry) erro
 		}
 	}
 	return lastErr
+}
+
+func levelOf(line string) string {
+	const marker = `"level":"`
+	index := strings.Index(line, marker)
+	if index < 0 {
+		return "unknown"
+	}
+	rest := line[index+len(marker):]
+	end := strings.IndexByte(rest, '"')
+	if end <= 0 || end > 8 {
+		return "unknown"
+	}
+	return strings.ToLower(rest[:end])
+}
+
+func loopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	address, err := netip.ParseAddr(host)
+	return err == nil && address.IsLoopback()
 }

@@ -154,3 +154,60 @@ func closeBroadcaster(t *testing.T, broadcaster *Broadcaster) {
 		t.Fatalf("Close() error = %v", err)
 	}
 }
+
+func TestBroadcasterSeparatesStreamsByLevel(t *testing.T) {
+	payloads := make(chan pushPayload, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		reader, err := gzip.NewReader(request.Body)
+		if err != nil {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		defer reader.Close()
+		var payload pushPayload
+		if err := json.NewDecoder(reader).Decode(&payload); err != nil {
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		payloads <- payload
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	broadcaster := newTestBroadcaster(t, server.URL+"/loki/api/v1/push", 4096, 4096)
+	for _, line := range []string{
+		`{"level":"INFO","message":"a"}`,
+		`{"level":"ERROR","message":"b"}`,
+		`{"level":"INFO","message":"c"}`,
+	} {
+		if _, err := broadcaster.Write([]byte(line + "\n")); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+	closeBroadcaster(t, broadcaster)
+
+	payload := <-payloads
+	counts := map[string]int{}
+	for _, stream := range payload.Streams {
+		counts[stream.Stream["level"]] += len(stream.Values)
+	}
+	if len(payload.Streams) != 2 || counts["info"] != 2 || counts["error"] != 1 {
+		t.Fatalf("streams = %+v counts = %v", payload.Streams, counts)
+	}
+}
+
+func TestRemoteLokiEndpointRequiresHTTPS(t *testing.T) {
+	_, err := New(Config{
+		URL:            "http://logs.example.com/loki/api/v1/push",
+		Username:       "tenant",
+		Password:       "token",
+		Environment:    "test",
+		QueueBytes:     1024,
+		BatchBytes:     512,
+		FlushInterval:  time.Second,
+		RequestTimeout: time.Second,
+	})
+	if err == nil {
+		t.Fatal("plain HTTP remote endpoint was accepted")
+	}
+}
