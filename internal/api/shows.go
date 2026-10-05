@@ -2,13 +2,11 @@ package api
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strings"
-	"unicode"
 
 	"seat-reservation/internal/show"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type createShowRequest struct {
@@ -22,9 +20,6 @@ const maxPostgresInteger = 1<<31 - 1
 
 func (request *createShowRequest) normalizeAndValidate() validationErrors {
 	request.Name = strings.TrimSpace(request.Name)
-	for index := range request.Seats {
-		request.Seats[index] = strings.TrimSpace(request.Seats[index])
-	}
 
 	fields := validationErrors{}
 	if length := len([]byte(request.Name)); length == 0 || length > 200 {
@@ -40,36 +35,26 @@ func (request *createShowRequest) normalizeAndValidate() validationErrors {
 	if request.PerUserLimit != nil && (*request.PerUserLimit <= 0 || *request.PerUserLimit > maxPostgresInteger) {
 		fields["per_user_limit"] = "must contain a value between 1 and 2147483647"
 	}
-	if len(request.Seats) == 0 {
-		fields["seats"] = "must contain at least one seat"
-	} else {
-		seen := make(map[string]struct{}, len(request.Seats))
-		for _, number := range request.Seats {
-			if length := len([]byte(number)); length == 0 || length > 32 {
-				fields["seats"] = "each seat number must contain between 1 and 32 bytes"
-				break
-			}
-			if containsControlCharacter(number) {
-				fields["seats"] = "seat numbers must not contain control characters"
-				break
-			}
-			if _, exists := seen[number]; exists {
-				fields["seats"] = "must contain unique seat numbers"
-				break
-			}
-			seen[number] = struct{}{}
-		}
+	normalizedSeats, seatError := normalizeSeatNumbers(request.Seats)
+	request.Seats = normalizedSeats
+	if seatError != "" {
+		fields["seats"] = seatError
+	}
+
+	maximumReservationSeats := len(request.Seats)
+	if maximumReservationSeats > show.DefaultPerUserLimit {
+		maximumReservationSeats = show.DefaultPerUserLimit
+	}
+	if request.PerUserLimit != nil && *request.PerUserLimit > 0 && *request.PerUserLimit < maximumReservationSeats {
+		maximumReservationSeats = *request.PerUserLimit
+	}
+	if request.PricePaise != nil &&
+		*request.PricePaise >= 0 &&
+		maximumReservationSeats > 0 &&
+		*request.PricePaise > math.MaxInt64/int64(maximumReservationSeats) {
+		fields["price_paise"] = "is too large for the maximum reservation size"
 	}
 	return fields
-}
-
-func containsControlCharacter(value string) bool {
-	for _, character := range value {
-		if unicode.IsControl(character) {
-			return true
-		}
-	}
-	return false
 }
 
 func readCreateShow(writer http.ResponseWriter, request *http.Request) (show.CreateInput, bool) {
@@ -122,9 +107,8 @@ func (api *API) createShow(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (api *API) getShow(writer http.ResponseWriter, request *http.Request) {
-	showID := request.PathValue("id")
-	var parsedID pgtype.UUID
-	if err := parsedID.Scan(showID); err != nil || !parsedID.Valid {
+	showID, ok := canonicalUUID(request.PathValue("id"))
+	if !ok {
 		writeJSON(writer, http.StatusBadRequest, map[string]string{"error": "invalid_show_id"})
 		return
 	}
