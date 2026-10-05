@@ -1,0 +1,49 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: seat_reservation
+      POSTGRES_USER: seat
+      POSTGRES_PASSWORD: seat_local
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seat -d seat_reservation"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build:
+      context: .
+    environment:
+      DATABASE_URL: postgres://seat:seat_local@postgres:5432/seat_reservation?sslmode=disable
+      JWT_SECRET: local-assignment-jwt-secret-32-bytes
+      ADMIN_EMAIL: admin@local.test
+      ADMIN_PASSWORD: admin12345
+      TOKEN_TTL: 24h
+      HTTP_ADDRESS: :8080
+      MIGRATIONS_DIR: /app/migrations
+      DB_MAX_CONNECTIONS: 16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/live"]
+      interval: 5s
+      timeout: 2s
+      retries: 12
+    restart: unless-stopped
+    develop:
+      watch:
+        - action: rebuild
+          path: .
+          ignore:
+            - .git/
+            - .env
+            - assignment.md
+
+volumes:
+  postgres_data:

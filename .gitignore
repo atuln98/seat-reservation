@@ -1,0 +1,7 @@
+/AGENTS.md
+.env
+.secrets/
+/bin/
+/tmp/
+/api
+*.log
