@@ -41,6 +41,7 @@ type showOperations interface {
 type reservationOperations interface {
 	Reserve(context.Context, reservation.ReserveInput) (reservation.ReserveResult, error)
 	Cancel(context.Context, string, string) (reservation.Reservation, error)
+	Integrity(context.Context, string) (reservation.IntegrityReport, error)
 }
 
 func NewRouter(
@@ -83,6 +84,7 @@ func NewRouter(
 	router.HandleFunc("GET /shows/{id}", api.getShow)
 	router.Handle("POST /shows/{id}/reserve", tokens.Middleware(http.HandlerFunc(api.reserveSeats)))
 	router.Handle("POST /reservations/{id}/cancel", tokens.Middleware(http.HandlerFunc(api.cancelReservation)))
+	router.Handle("GET /admin/shows/{id}/integrity", tokens.Middleware(api.requireRole(auth.RoleAdmin, http.HandlerFunc(api.showIntegrity))))
 
 	handler := httpmiddleware.Recover(logger)(httpmiddleware.CaptureRoute(router))
 	handler = httpmiddleware.AccessLog(logger)(handler)

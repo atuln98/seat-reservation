@@ -180,4 +180,12 @@ func TestConcurrentReservationsHaveOneWinner(t *testing.T) {
 	if historicalAssignments != 2 {
 		t.Fatalf("historical assignments = %d, want 2", historicalAssignments)
 	}
+
+	report, err := service.Integrity(ctx, showID)
+	if err != nil {
+		t.Fatalf("integrity check: %v", err)
+	}
+	if !report.OK || report.SeatsConfirmed != 1 || report.SeatsWithActiveOwner != 1 {
+		t.Fatalf("integrity report after concurrent bookings = %+v", report)
+	}
 }

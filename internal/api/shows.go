@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"seat-reservation/internal/httpmiddleware"
+	"seat-reservation/internal/reservation"
 	"seat-reservation/internal/show"
 )
 
@@ -151,4 +152,42 @@ func (api *API) getShow(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	writeJSON(writer, http.StatusOK, existing)
+}
+
+func (api *API) showIntegrity(writer http.ResponseWriter, request *http.Request) {
+	showID, ok := canonicalUUID(request.PathValue("id"))
+	if !ok {
+		writeError(writer, http.StatusBadRequest, "invalid_show_id")
+		return
+	}
+
+	report, err := api.reservations.Integrity(request.Context(), showID)
+	if err != nil {
+		if writeContextError(writer, err) {
+			return
+		}
+		if errors.Is(err, reservation.ErrShowNotFound) {
+			writeError(writer, http.StatusNotFound, "show_not_found")
+			return
+		}
+		httpmiddleware.RecordRequestError(request, err)
+		requestLogger(api.logger, request).Error(
+			"integrity check failed",
+			"event", "integrity_check_failed",
+			"showId", showID,
+			"error", err,
+		)
+		writeError(writer, http.StatusInternalServerError, "internal_error")
+		return
+	}
+
+	if !report.OK {
+		requestLogger(api.logger, request).Error(
+			"integrity violations found",
+			"event", "integrity_violations",
+			"showId", showID,
+			"violations", report.Violations,
+		)
+	}
+	writeJSON(writer, http.StatusOK, report)
 }

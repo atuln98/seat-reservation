@@ -18,8 +18,13 @@ import (
 )
 
 type stubReservationOperations struct {
-	reserve func(context.Context, reservation.ReserveInput) (reservation.ReserveResult, error)
-	cancel  func(context.Context, string, string) (reservation.Reservation, error)
+	reserve   func(context.Context, reservation.ReserveInput) (reservation.ReserveResult, error)
+	cancel    func(context.Context, string, string) (reservation.Reservation, error)
+	integrity func(context.Context, string) (reservation.IntegrityReport, error)
+}
+
+func (stub stubReservationOperations) Integrity(ctx context.Context, showID string) (reservation.IntegrityReport, error) {
+	return stub.integrity(ctx, showID)
 }
 
 func (stub stubReservationOperations) Reserve(
