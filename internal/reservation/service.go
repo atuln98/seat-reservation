@@ -295,7 +295,7 @@ func (service *Service) reserve(ctx context.Context, input ReserveInput) (Reserv
 
 	created.Seats = sortedSeats
 	commitContext, commitSpan := step(ctx, "commit")
-	if err := tx.Commit(commitContext); err != nil {
+	if err := tx.Commit(context.WithoutCancel(commitContext)); err != nil {
 		wrapped := fmt.Errorf("commit reservation: %w", err)
 		telemetry.Finish(commitSpan, wrapped)
 		return ReserveResult{}, wrapped
@@ -481,7 +481,7 @@ func (service *Service) cancel(ctx context.Context, reservationID string, userID
 	}
 
 	existing.Status = StatusCancelled
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(context.WithoutCancel(ctx)); err != nil {
 		return Reservation{}, fmt.Errorf("commit cancellation: %w", err)
 	}
 	return existing, nil
